@@ -16,6 +16,9 @@ jsonschema = "^4.21"
 pytest = "^7.0"
 pytest-cov = "^4.0"
 
+[tool.poetry.scripts]
+codex-orch = "codex_orch.cli:app"
+
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
