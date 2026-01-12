@@ -33,7 +33,7 @@ def _state_path(paths, run_id: str) -> Path:
 
 @app.command()
 def init(
-    force: bool = typer.Option(False, help="Overwrite existing orchestrator files"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing orchestrator files"),
 ) -> None:
     """Create .orchestrator layout with default config, schemas, and prompts."""
     repo_root = _repo_root()
