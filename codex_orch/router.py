@@ -71,13 +71,16 @@ class Orchestrator:
         return spec
 
     def _append_decisions(self, run_id: str, task: TaskRecord) -> None:
-        if not task.result or not task.result.decisions:
+        # Only TaskResult (non-navigator) carries decisions; navigator PlanResult does not.
+        if not task.result or not hasattr(task.result, "decisions"):
+            return
+        if not task.result.decisions:  # type: ignore[attr-defined]
             return
         log_path = self.paths.decisions
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with log_path.open("a", encoding="utf-8") as handle:
             handle.write(f"# Run {run_id} — {task.task_id} ({task.role})\n")
-            for decision in task.result.decisions:
+            for decision in task.result.decisions:  # type: ignore[attr-defined]
                 handle.write(f"- {decision}\n")
             handle.write("\n")
 
