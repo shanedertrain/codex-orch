@@ -3,14 +3,12 @@
 Local orchestrator that drives multiple Codex workers (navigator/implementer/tester/reviewer) with isolated git worktrees, JSONL capture, and schema-validated outputs.
 
 ## Setup
-```
-cd codex_orch
-pip install -e .[dev]
-```
+- Install the Codex CLI separately (npm, not Poetry): `npm i -g @openai/codex` and verify `codex --version`. See `docs/ignore/codex-wsl-install.md` for WSL-specific steps.
+- In this repo: `pip install -e .[dev]` (or `poetry install --with dev --sync` from the monorepo root, then use `poetry run codex-orch`).
 
 Initialize a repo with default config/schemas/prompts:
 ```
-codex-orch init
+poetry run codex-orch init    # or codex-orch init if installed globally
 ```
 
 ## Usage
@@ -29,3 +27,6 @@ Concurrency heuristics support allow/ignore globs for path overlap checks (confi
 - Workers are spawned with `codex exec --json` and validated against the configured schemas.
 - Each task runs in its own git worktree/branch using the pattern `orch/{date}/run-{id}/{task-role}`.
 - A retry is attempted when schema validation fails, with an explicit reminder to conform to the schema.
+- Memory/search (optional but recommended):
+  - Start codex-mem MCP server: `poetry run codex-mem-serve` (or use `bash app/common/scripts/dev_memory.sh` in the monorepo to warm tldr and start the server).
+  - Warm tldr summaries before runs: `poetry run tldr warm .`
