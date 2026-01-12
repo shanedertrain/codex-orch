@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TaskResult",
+  "type": "object",
+  "required": ["summary", "decisions", "changes", "commands_ran", "risks", "next_tasks"],
+  "properties": {
+    "summary": { "type": "string" },
+    "decisions": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "changes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string" },
+          "intent": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "commands_ran": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "risks": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "next_tasks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "prompt"],
+        "properties": {
+          "role": { "type": "string" },
+          "prompt": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
