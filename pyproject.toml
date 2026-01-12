@@ -2,7 +2,7 @@
 name = "codex-orch"
 version = "0.1.0"
 description = "CLI orchestrator for Codex multi-worker workflows"
-authors = ["All Rentz <dev@allrentz.com>"]
+authors = ["Cameron Basham <albatrossautomata@gmail.com>"]
 readme = "README.md"
 packages = [{ include = "codex_orch" }]
 
