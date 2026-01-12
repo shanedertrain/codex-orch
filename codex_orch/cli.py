@@ -3,8 +3,6 @@ from __future__ import annotations
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
-
 import typer
 import yaml
 
@@ -63,8 +61,8 @@ def init(
 @app.command()
 def run(
     goal: str = typer.Argument(..., help="High-level goal for the navigator"),
-    config: Path = typer.Option(None, help="Path to orchestrator YAML config"),
-    run_id: Optional[str] = typer.Option(None, help="Run identifier"),
+    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Run identifier"),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -79,10 +77,10 @@ def run(
 
 @app.command()
 def task(
-    role: str = typer.Option(..., help="Role to use"),
+    role: str = typer.Option(..., "--role", help="Role to use"),
     prompt: str = typer.Argument(..., help="Prompt for the worker"),
-    config: Path = typer.Option(None, help="Path to orchestrator YAML config"),
-    run_id: Optional[str] = typer.Option(None, help="Run identifier"),
+    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Run identifier"),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -100,8 +98,8 @@ def task(
 
 @app.command()
 def resume(
-    run_id: str = typer.Option(..., help="Run identifier to resume"),
-    config: Path = typer.Option(None, help="Path to orchestrator YAML config"),
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier to resume"),
+    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -125,8 +123,8 @@ def resume(
 
 @app.command()
 def report(
-    run_id: str = typer.Option(..., help="Run identifier"),
-    config: Path = typer.Option(None, help="Path to orchestrator YAML config"),
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier"),
+    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -153,9 +151,9 @@ def report(
 
 @app.command()
 def clean(
-    run_id: str = typer.Option(..., help="Run identifier"),
-    config: Path = typer.Option(None, help="Path to orchestrator YAML config"),
-    keep_branches: bool = typer.Option(False, help="Do not delete branches"),
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier"),
+    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    keep_branches: bool = typer.Option(False, "--keep-branches", help="Do not delete branches"),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -178,10 +176,10 @@ def clean(
 
 @app.command()
 def merge(
-    run_id: str = typer.Option(..., help="Run identifier"),
-    config: Path = typer.Option(None, help="Path to orchestrator YAML config"),
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier"),
+    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
     allow_automerge: bool = typer.Option(
-        False, help="Attempt git merge (fast-forward) for each task branch"
+        False, "--allow-automerge", help="Attempt git merge (fast-forward) for each task branch"
     ),
 ) -> None:
     repo_root = _repo_root()
