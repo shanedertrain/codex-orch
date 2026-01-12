@@ -13,7 +13,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["role", "prompt"],
+        "required": ["role", "prompt", "acceptance"],
         "properties": {
           "role": { "type": "string" },
           "prompt": { "type": "string" },
