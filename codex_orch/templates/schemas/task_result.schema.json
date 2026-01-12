@@ -13,7 +13,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["path"],
+        "required": ["path", "intent"],
         "properties": {
           "path": { "type": "string" },
           "intent": { "type": "string" }
