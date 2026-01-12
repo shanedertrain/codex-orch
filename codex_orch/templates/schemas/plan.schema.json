@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "NavigatorPlan",
   "type": "object",
-  "required": ["tasks"],
+  "required": ["goal", "assumptions", "tasks"],
   "properties": {
     "goal": { "type": "string" },
     "assumptions": {
