@@ -12,7 +12,11 @@ from .router import load_orchestrator
 from .state import load_state, save_state
 from .worktree import remove_worktree
 
-app = typer.Typer(help="Codex orchestrator CLI")
+app = typer.Typer(
+    help="Codex orchestrator CLI",
+    rich_markup_mode=None,
+    pretty_exceptions_enable=False,
+)
 
 
 def _repo_root() -> Path:
