@@ -161,12 +161,15 @@ def clean(
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
-    _, paths = load_orchestrator(config_path, repo_root)
+    orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
         typer.echo(f"State not found for run {run_id}: {state_path}")
         raise typer.Exit(code=1)
     state = load_state(state_path)
+    if orchestrator.config.use_single_workspace:
+        typer.echo("Single-workspace mode enabled; no worktrees to clean.")
+        return
     for task in state.tasks:
         if task.worktree_path:
             remove_worktree(

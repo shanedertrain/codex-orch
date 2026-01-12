@@ -89,6 +89,7 @@ class OrchestratorConfig:
     git: GitConfig
     codex: CodexConfig
     concurrency: ConcurrencyConfig
+    use_single_workspace: bool = False
 
     def role_for(self, name: str) -> RoleConfig | None:
         return next((role for role in self.roles if role.name == name), None)

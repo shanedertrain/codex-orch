@@ -58,6 +58,7 @@ def load_config(
     git = GitConfig(**(raw.get("git") or {}))
     codex = CodexConfig(**(raw.get("codex") or {}))
     concurrency = ConcurrencyConfig(**(raw.get("concurrency") or {}))
+    use_single_workspace = bool(raw.get("use_single_workspace", False))
 
     config = OrchestratorConfig(
         roles=roles,
@@ -66,6 +67,7 @@ def load_config(
         git=git,
         codex=codex,
         concurrency=concurrency,
+        use_single_workspace=use_single_workspace,
     )
     return config, resolved_paths
 
@@ -86,6 +88,7 @@ def default_config() -> dict[str, Any]:
         "git": asdict(GitConfig()),
         "codex": asdict(CodexConfig()),
         "concurrency": asdict(ConcurrencyConfig()),
+        "use_single_workspace": False,
         "roles": [
             {
                 "name": "navigator",

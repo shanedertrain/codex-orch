@@ -59,13 +59,22 @@ class Orchestrator:
         )
 
     def _prepare_worktree(self, run_id: str, task: TaskRecord) -> WorktreeSpec:
-        worktree_path = self.paths.worktrees / f"{task.task_id}-{task.role}"
-        branch = self._branch_name(run_id, task)
-        spec = WorktreeSpec(
-            path=worktree_path, branch=branch, base_ref=self.config.git.base_ref
-        )
-        if not worktree_path.exists():
-            create_worktree(spec, self.repo_root)
+        if self.config.use_single_workspace:
+            worktree_path = self.repo_root
+            branch = None
+            spec = WorktreeSpec(
+                path=worktree_path,
+                branch="single-workspace",
+                base_ref=self.config.git.base_ref,
+            )
+        else:
+            worktree_path = self.paths.worktrees / f"{task.task_id}-{task.role}"
+            branch = self._branch_name(run_id, task)
+            spec = WorktreeSpec(
+                path=worktree_path, branch=branch, base_ref=self.config.git.base_ref
+            )
+            if not worktree_path.exists():
+                create_worktree(spec, self.repo_root)
         task.worktree_path = worktree_path
         task.branch = branch
         return spec
