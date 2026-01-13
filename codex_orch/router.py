@@ -449,7 +449,7 @@ class Orchestrator:
                     finished_id = running.pop(future)
                     updated = future.result()
                     tasks_by_id[finished_id] = updated
-                    if updated.result and updated.result.next_tasks:
+                    if isinstance(updated.result, TaskResult) and updated.result.next_tasks:
                         for nxt in updated.result.next_tasks:
                             task_id = f"T{next_index:04d}"
                             new_task = TaskRecord(
