@@ -72,6 +72,14 @@ class Orchestrator:
         self._cached_allowed_roles = (allowed, aliases)
         return allowed, aliases
 
+    def _truncate_prompt(self, prompt: str) -> str:
+        limit = getattr(self.config.limits, "max_prompt_chars", 0) or 0
+        if limit <= 0 or len(prompt) <= limit:
+            return prompt
+        suffix = " [truncated]"
+        keep = max(0, limit - len(suffix))
+        return prompt[:keep] + suffix
+
     def _infer_role_blockers(
         self,
         role: str,
@@ -221,6 +229,7 @@ class Orchestrator:
         if self.spec_text and task.role == "navigator":
             rendered_prompt = f"{rendered_prompt}\n\nSpecification:\n{self.spec_text}"
 
+        rendered_prompt = self._truncate_prompt(rendered_prompt)
         self._record_prompt_stats(jsonl_path, task, rendered_prompt)
 
         cmd = build_codex_command(
