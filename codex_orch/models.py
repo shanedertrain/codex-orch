@@ -154,6 +154,9 @@ class CodexInvocation:
     exit_code: int | None = None
     output_last_message_path: Path | None = None
     jsonl_log_path: Path | None = None
+    input_tokens: int = 0
+    output_tokens: int = 0
+    rate_limit_hits: int = 0
 
 
 @dataclass

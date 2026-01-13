@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
-import threading
 import subprocess
 import sys
-import os
 import time
+import threading
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -219,6 +220,29 @@ def _shorten(text: str, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
+ANSI_RE = re.compile(r"\x1b\\[[0-9;]*m")
+
+
+def _visible_len(text: str) -> int:
+    return len(ANSI_RE.sub("", text))
+
+
+def _format_table_ansi(rows: list[list[str]], headers: list[str]) -> str:
+    items = [headers] + rows if rows else [headers]
+    widths = [max(_visible_len(cell) for cell in col) for col in zip(*items)]
+
+    def fmt(row: list[str]) -> str:
+        parts: list[str] = []
+        for cell, width in zip(row, widths):
+            pad = max(0, width - _visible_len(cell))
+            parts.append(f"{cell}{' ' * pad}")
+        return " | ".join(parts)
+
+    lines = [fmt(headers), fmt(["-" * w for w in widths])]
+    lines.extend(fmt(row) for row in rows)
+    return "\n".join(lines)
+
+
 def _last_activity(paths, run_id: str, task_id: str, fallback: str | None) -> str | None:
     events_path = task_dir(paths, run_id, task_id) / "events.jsonl"
     if not events_path.exists():
@@ -263,15 +287,25 @@ def _render_status(
     except Exception as exc:  # pragma: no cover - defensive
         typer.echo(f"Could not read state: {exc}")
         return
+    rows: list[list[str]] = []
     for task in state.tasks:
         color = _status_color(task.status)
         status_text = typer.style(task.status.value, fg=color)
-        typer.echo(
-            f"{task.task_id} [{task.role}] {status_text} - {_shorten(task.prompt)}"
-        )
         detail = _last_activity(paths, run_id, task.task_id, task.prompt)
-        if detail:
-            typer.echo(f"    {detail}")
+        rows.append(
+            [
+                task.task_id,
+                task.role,
+                status_text,
+                _shorten(detail, 80) if detail else "",
+            ]
+        )
+    if rows:
+        typer.echo(
+            _format_table_ansi(
+                rows, ["Task", "Role", "Status", "Last Activity"]
+            )
+        )
 
 
 def _status_loop(

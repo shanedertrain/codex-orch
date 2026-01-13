@@ -19,9 +19,9 @@ class CodexExecutionResult:
     output_path: Path | None
     jsonl_log: Path
     raw_last_message: str | None
-    input_tokens: int
-    output_tokens: int
-    rate_limit_hits: int
+    input_tokens: int = 0
+    output_tokens: int = 0
+    rate_limit_hits: int = 0
 
 
 def build_codex_command(
