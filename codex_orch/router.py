@@ -45,6 +45,8 @@ def task_dir(paths: ResolvedPaths, run_id: str, task_id: str) -> Path:
 
 
 class Orchestrator:
+    _role_order: tuple[str, ...] = ("navigator", "implementer", "reviewer", "tester")
+
     def __init__(
         self, config: OrchestratorConfig, paths: ResolvedPaths, repo_root: Path
     ):
@@ -69,6 +71,27 @@ class Orchestrator:
         aliases = ", ".join(alias_pairs)
         self._cached_allowed_roles = (allowed, aliases)
         return allowed, aliases
+
+    def _infer_role_blockers(
+        self,
+        role: str,
+        tasks: dict[str, TaskRecord],
+        skip_task_id: str | None = None,
+    ) -> list[str]:
+        """Return blockers based on role ordering (navigator->implementer->reviewer->tester)."""
+        if role not in self._role_order:
+            return []
+        idx = self._role_order.index(role)
+        if idx == 0:
+            return []
+        prev_role = self._role_order[idx - 1]
+        blockers: list[str] = []
+        for task_id, task in tasks.items():
+            if task_id == skip_task_id:
+                continue
+            if task.role == prev_role:
+                blockers.append(task_id)
+        return blockers
 
     def _branch_name(self, run_id: str, task: TaskRecord) -> str:
         today = datetime.now(UTC).date().isoformat()
@@ -387,6 +410,18 @@ class Orchestrator:
             task.role = resolved_role
             tasks_by_id[task_id] = task
             upsert_task(run_state, task)
+        # Apply default role-based blocking when none was provided.
+        combined_for_blocking = {t.task_id: t for t in run_state.tasks}
+        combined_for_blocking.update(tasks_by_id)
+        for task_id, task in tasks_by_id.items():
+            if task.blocked_by:
+                continue
+            inferred = self._infer_role_blockers(
+                task.role, combined_for_blocking, skip_task_id=task_id
+            )
+            if inferred:
+                task.blocked_by = inferred
+                upsert_task(run_state, task)
         save_state(state_path, run_state)
 
         pending = {tid for tid, t in tasks_by_id.items() if t.status == TaskStatus.PENDING}
@@ -414,7 +449,11 @@ class Orchestrator:
                     if len(running) >= max_workers:
                         break
                     task = tasks_by_id[task_id]
-                    missing = [dep for dep in task.blocked_by if dep not in tasks_by_id]
+                    tasks_lookup = {
+                        **{t.task_id: t for t in run_state.tasks},
+                        **tasks_by_id,
+                    }
+                    missing = [dep for dep in task.blocked_by if dep not in tasks_lookup]
                     if missing:
                         task.status = TaskStatus.FAILED
                         task.error = f"Missing dependencies: {', '.join(missing)}"
@@ -422,14 +461,16 @@ class Orchestrator:
                         pending.remove(task_id)
                         progress = True
                         continue
-                    dep_statuses = [tasks_by_id[dep].status for dep in task.blocked_by]
+                    dep_statuses = [tasks_lookup[dep].status for dep in task.blocked_by]
                     if any(
                         status in {TaskStatus.FAILED, TaskStatus.NEEDS_RETRY}
                         for status in dep_statuses
                     ):
                         task.status = TaskStatus.FAILED
                         failed_deps = [
-                            dep for dep in task.blocked_by if tasks_by_id[dep].status != TaskStatus.COMPLETED
+                            dep
+                            for dep in task.blocked_by
+                            if tasks_lookup[dep].status != TaskStatus.COMPLETED
                         ]
                         task.error = (
                             "Blocked because dependencies failed: "
@@ -476,6 +517,18 @@ class Orchestrator:
                             new_task = TaskRecord(
                                 task_id=task_id, role=nxt.role, prompt=nxt.prompt
                             )
+                            inferred_blockers = [finished_id]
+                            combined_for_blocking = {t_id: t for t_id, t in tasks_by_id.items()}
+                            combined_for_blocking.update(
+                                {t.task_id: t for t in run_state.tasks}
+                            )
+                            role_blockers = self._infer_role_blockers(
+                                nxt.role, combined_for_blocking, skip_task_id=task_id
+                            )
+                            for blocker in role_blockers:
+                                if blocker not in inferred_blockers:
+                                    inferred_blockers.append(blocker)
+                            new_task.blocked_by = inferred_blockers
                             tasks_by_id[task_id] = new_task
                             pending.add(task_id)
                             persist(new_task)
