@@ -265,6 +265,11 @@ def run(
         "--status/--no-status",
         help="Show live task status while the run is active.",
     ),
+    prune_on_complete: bool = typer.Option(
+        True,
+        "--prune-on-complete/--keep-worktree",
+        help="Remove worktree/run artifacts after a completed run.",
+    ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -300,6 +305,22 @@ def run(
     typer.echo(
         f"Run {run_identifier} completed with {len(result.tasks)} tasks recorded."
     )
+    if prune_on_complete:
+        actions = _cleanup_run_artifacts(
+            orchestrator=orchestrator,
+            run_id=run_identifier,
+            repo_root=repo_root,
+            state=result,
+            keep_branches=False,
+        )
+        run_dir = paths.runs / run_identifier
+        if run_dir.exists():
+            shutil.rmtree(run_dir, ignore_errors=True)
+            actions.append(f"removed run dir {run_dir}")
+        if actions:
+            typer.echo("Cleanup:")
+            for line in actions:
+                typer.echo(f"- {line}")
 
 
 @app.command()
