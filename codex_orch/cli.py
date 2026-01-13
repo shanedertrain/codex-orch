@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import typer
@@ -331,6 +332,77 @@ def task(
     typer.echo(
         f"Task {record.task_id} for role {role} finished with status {record.status.value}."
     )
+
+
+@app.command()
+def validate(
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier to validate"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
+    spec_file: Path | None = typer.Option(
+        None,
+        "--spec-file",
+        help="Override spec file path for context (optional).",
+    ),
+    pytest_args: str = typer.Option(
+        "poetry run pytest",
+        "--pytest-args",
+        help="Command to run tests (default: poetry run pytest).",
+    ),
+    lint_cmd: str = typer.Option(
+        "poetry run ruff check .",
+        "--lint-cmd",
+        help="Command to run linting (default: poetry run ruff check .).",
+    ),
+) -> None:
+    """Run validation (lint/tests) against a completed run's workspace."""
+    repo_root = _repo_root()
+    config_path = config or _default_config_path(repo_root)
+    orchestrator, paths = load_orchestrator(config_path, repo_root)
+    state_path = _state_path(paths, run_id)
+    if not state_path.exists():
+        typer.echo(f"State not found for run {run_id}: {state_path}")
+        raise typer.Exit(code=1)
+    state = load_state(state_path)
+    stored_spec = state.spec_file
+    spec_path, spec_text = (
+        _load_spec(repo_root, spec_file)
+        if spec_file
+        else _load_spec(repo_root, stored_spec)  # type: ignore[arg-type]
+    )
+    orchestrator.spec_file = spec_path
+    orchestrator.spec_text = spec_text
+
+    worktree_path: Path | None = None
+    if orchestrator.config.use_single_workspace:
+        worktree_path = orchestrator.shared_workspace_spec(run_id).path
+    else:
+        for task in state.tasks:
+            if task.worktree_path:
+                worktree_path = Path(task.worktree_path)
+                break
+    if not worktree_path or not worktree_path.exists():
+        typer.echo("Worktree not found; cannot validate.")
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Validating run {run_id} in {worktree_path}")
+
+    def _run_cmd(cmd: str, label: str) -> int:
+        typer.echo(f"- {label}: {cmd}")
+        proc = subprocess.run(cmd, shell=True, cwd=worktree_path)
+        if proc.returncode != 0:
+            typer.echo(f"{label} failed (exit {proc.returncode})")
+        return proc.returncode
+
+    failures = 0
+    failures += 1 if _run_cmd(lint_cmd, "Lint") else 0
+    failures += 1 if _run_cmd(pytest_args, "Tests") else 0
+
+    if failures:
+        typer.echo(f"Validation failed with {failures} error(s).")
+        raise typer.Exit(code=1)
+    typer.echo("Validation succeeded.")
 
 
 @app.command()
