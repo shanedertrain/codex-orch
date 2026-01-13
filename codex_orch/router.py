@@ -176,7 +176,8 @@ class Orchestrator:
                 allowed_roles=self._allowed_roles_text()[0],
                 role_aliases=self._allowed_roles_text()[1],
             )
-        if self.spec_text:
+        # Only attach the spec to navigator prompts to reduce token load.
+        if self.spec_text and task.role == "navigator":
             rendered_prompt = f"{rendered_prompt}\n\nSpecification:\n{self.spec_text}"
 
         cmd = build_codex_command(
