@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
 import threading
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
-import os
 
 import jsonschema
 
@@ -110,6 +110,24 @@ class Orchestrator:
         task.branch = branch
         return spec
 
+    def _record_prompt_stats(
+        self, jsonl_path: Path, task: TaskRecord, prompt: str
+    ) -> None:
+        try:
+            jsonl_path.parent.mkdir(parents=True, exist_ok=True)
+            stats = {
+                "type": "prompt.stats",
+                "task_id": task.task_id,
+                "role": task.role,
+                "prompt_chars": len(prompt),
+                "prompt_words": len(prompt.split()),
+            }
+            with jsonl_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(stats) + "\n")
+        except Exception:
+            # Non-blocking best-effort logging; ignore failures.
+            return
+
     def _warm_tldr(self) -> None:
         if not self.config.warm_tldr:
             return
@@ -179,6 +197,8 @@ class Orchestrator:
         # Only attach the spec to navigator prompts to reduce token load.
         if self.spec_text and task.role == "navigator":
             rendered_prompt = f"{rendered_prompt}\n\nSpecification:\n{self.spec_text}"
+
+        self._record_prompt_stats(jsonl_path, task, rendered_prompt)
 
         cmd = build_codex_command(
             role=role_config,
