@@ -75,10 +75,10 @@ class Orchestrator:
     def _truncate_prompt(self, prompt: str) -> str:
         limit = getattr(self.config.limits, "max_prompt_chars", 0) or 0
         if limit <= 0 or len(prompt) <= limit:
-            return prompt
+            return prompt.strip()
         suffix = " [truncated]"
         keep = max(0, limit - len(suffix))
-        return prompt[:keep] + suffix
+        return prompt[:keep].rstrip() + suffix
 
     def _infer_role_blockers(
         self,

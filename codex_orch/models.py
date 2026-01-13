@@ -31,7 +31,7 @@ class LimitsConfig:
     max_tasks: int = 50
     max_iterations: int = 10
     retry_limit: int = 1
-    max_prompt_chars: int = 12000
+    max_prompt_chars: int = 6000
 
 
 @dataclass
