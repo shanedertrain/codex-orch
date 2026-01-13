@@ -4,6 +4,7 @@ import json
 import shutil
 import threading
 import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import typer
@@ -188,7 +189,8 @@ def _render_status(
     paths, run_id: str, header: str | None = None, clear_first: bool = False
 ) -> None:
     if clear_first:
-        typer.clear()
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
     state_path = _state_path(paths, run_id)
     if header:
         typer.echo(f"{header} ({datetime.now().isoformat(timespec='seconds')})")
