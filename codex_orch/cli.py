@@ -6,6 +6,7 @@ import threading
 import subprocess
 import sys
 import os
+import time
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -279,6 +280,43 @@ def _status_loop(
     while not stop_event.is_set():
         _render_status(paths, run_id, clear_first=True)
         stop_event.wait(interval)
+
+
+@app.command()
+def status(
+    run_id: str = typer.Option(..., "--run-id", help="Run identifier to inspect"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
+    watch: float = typer.Option(
+        0.0,
+        "--watch",
+        help="If >0, refresh status every N seconds until interrupted.",
+        min=0.0,
+    ),
+) -> None:
+    """Show task status for an existing run (without starting a new run)."""
+    repo_root = _repo_root()
+    config_path = config or _default_config_path(repo_root)
+    _, paths = load_orchestrator(config_path, repo_root)
+    state_path = _state_path(paths, run_id)
+    if not state_path.exists():
+        typer.echo(f"State not found for run {run_id}: {state_path}")
+        raise typer.Exit(code=1)
+    if watch > 0:
+        try:
+            while True:
+                _render_status(
+                    paths,
+                    run_id,
+                    header=f"Run {run_id} status (watching {watch}s)",
+                    clear_first=True,
+                )
+                time.sleep(watch)
+        except KeyboardInterrupt:
+            return
+    else:
+        _render_status(paths, run_id, header=f"Run {run_id} status")
 
 
 def _usage_from_events(events_path: Path) -> tuple[int, int, int]:
