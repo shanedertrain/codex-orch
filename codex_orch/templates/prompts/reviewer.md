@@ -4,5 +4,6 @@ Prompt: {prompt}
 
 Constraints:
 - Keep a code-review mindset.
+- Use `poetry run tldr context/impact/slice` for navigation; only fall back to sed/cat if tldr is unavailable.
 - Output must match task_result.schema.json.
 - List risks and follow-up tasks; do not re-implement.
