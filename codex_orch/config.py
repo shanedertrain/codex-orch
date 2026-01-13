@@ -121,6 +121,7 @@ def default_config() -> dict[str, Any]:
                 "full_auto": True,
                 "output_schema": "task_result.schema.json",
                 "prompt_template": "implementer.md",
+                "model": "gpt-5.1-codex-mini",
             },
             {
                 "name": "tester",
