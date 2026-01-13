@@ -49,14 +49,34 @@ PENDING_STATUSES = {
 
 SPEC_MAX_BYTES = 256 * 1024
 # Optional pricing table sourced from env (CODEX_ORCH_PRICING_JSON) or defaults.
-# Format: {"model_name": {"input_per_1k": 0.0025, "output_per_1k": 0.01}}
+# Format: {"model_name": {"input_per_1k": 0.0025, "cached_per_1k": 0.00025, "output_per_1k": 0.01}}
 PRICING_DEFAULT: dict[str, dict[str, float]] = {
     # Standard tier codex models (prices per 1K tokens).
-    "gpt-5.1-codex-max": {"input_per_1k": 0.00125, "output_per_1k": 0.01},
-    "gpt-5.1-codex": {"input_per_1k": 0.00125, "output_per_1k": 0.01},
-    "gpt-5-codex": {"input_per_1k": 0.00125, "output_per_1k": 0.01},
-    "gpt-5.1-codex-mini": {"input_per_1k": 0.00025, "output_per_1k": 0.002},
-    "codex-mini-latest": {"input_per_1k": 0.0015, "output_per_1k": 0.006},
+    "gpt-5.1-codex-max": {
+        "input_per_1k": 0.00125,
+        "cached_per_1k": 0.000125,
+        "output_per_1k": 0.01,
+    },
+    "gpt-5.1-codex": {
+        "input_per_1k": 0.00125,
+        "cached_per_1k": 0.000125,
+        "output_per_1k": 0.01,
+    },
+    "gpt-5-codex": {
+        "input_per_1k": 0.00125,
+        "cached_per_1k": 0.000125,
+        "output_per_1k": 0.01,
+    },
+    "gpt-5.1-codex-mini": {
+        "input_per_1k": 0.00025,
+        "cached_per_1k": 0.000025,
+        "output_per_1k": 0.002,
+    },
+    "codex-mini-latest": {
+        "input_per_1k": 0.0015,
+        "cached_per_1k": 0.000375,
+        "output_per_1k": 0.006,
+    },
 }
 
 
@@ -75,12 +95,14 @@ def _load_pricing() -> dict[str, dict[str, float]]:
         if not isinstance(cfg, dict):
             continue
         input_rate = cfg.get("input_per_1k")
+        cached_rate = cfg.get("cached_per_1k", input_rate)
         output_rate = cfg.get("output_per_1k")
         if isinstance(input_rate, (int, float)) and isinstance(
             output_rate, (int, float)
         ):
             cleaned[model] = {
                 "input_per_1k": float(input_rate),
+                "cached_per_1k": float(cached_rate) if isinstance(cached_rate, (int, float)) else float(input_rate),
                 "output_per_1k": float(output_rate),
             }
     return cleaned
