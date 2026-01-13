@@ -184,7 +184,11 @@ def _last_activity(paths, run_id: str, task_id: str, fallback: str | None) -> st
     return fallback
 
 
-def _render_status(paths, run_id: str, header: str | None = None) -> None:
+def _render_status(
+    paths, run_id: str, header: str | None = None, clear_first: bool = False
+) -> None:
+    if clear_first:
+        typer.clear()
     state_path = _state_path(paths, run_id)
     if header:
         typer.echo(f"{header} ({datetime.now().isoformat(timespec='seconds')})")
@@ -211,7 +215,7 @@ def _status_loop(
     paths, run_id: str, stop_event: threading.Event, interval: float
 ) -> None:
     while not stop_event.is_set():
-        _render_status(paths, run_id)
+        _render_status(paths, run_id, clear_first=True)
         stop_event.wait(interval)
 
 
