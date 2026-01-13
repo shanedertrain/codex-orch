@@ -159,6 +159,23 @@ class Orchestrator:
             # Non-blocking best-effort logging; ignore failures.
             return
 
+    def _record_usage_summary(
+        self, jsonl_path: Path, task: TaskRecord, execution: CodexInvocation
+    ) -> None:
+        try:
+            summary = {
+                "type": "usage.summary",
+                "task_id": task.task_id,
+                "role": task.role,
+                "input_tokens": execution.input_tokens or 0,
+                "output_tokens": execution.output_tokens or 0,
+                "rate_limit_hits": execution.rate_limit_hits or 0,
+            }
+            with jsonl_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(summary) + "\n")
+        except Exception:
+            return
+
     def _warm_tldr(self) -> None:
         if not self.config.warm_tldr:
             return
@@ -285,7 +302,11 @@ class Orchestrator:
             exit_code=execution.exit_code,
             output_last_message_path=execution.output_path,
             jsonl_log_path=execution.jsonl_log,
+            input_tokens=execution.input_tokens,
+            output_tokens=execution.output_tokens,
+            rate_limit_hits=execution.rate_limit_hits,
         )
+        self._record_usage_summary(jsonl_path, task, task.codex)
         return task
 
     def run_task(

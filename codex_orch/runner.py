@@ -19,6 +19,9 @@ class CodexExecutionResult:
     output_path: Path | None
     jsonl_log: Path
     raw_last_message: str | None
+    input_tokens: int
+    output_tokens: int
+    rate_limit_hits: int
 
 
 def build_codex_command(
@@ -93,6 +96,9 @@ def run_codex_process(
             output_path=output_path if output_path.exists() else None,
             jsonl_log=jsonl_log_path,
             raw_last_message=raw_last_message,
+            input_tokens=jsonl_capture.input_tokens,
+            output_tokens=jsonl_capture.output_tokens,
+            rate_limit_hits=jsonl_capture.rate_limit_hits,
         )
 
 
