@@ -5,6 +5,8 @@ import shutil
 import threading
 import subprocess
 import sys
+import os
+from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import typer
@@ -46,6 +48,35 @@ PENDING_STATUSES = {
 }
 
 SPEC_MAX_BYTES = 256 * 1024
+# Optional pricing table sourced from env (CODEX_ORCH_PRICING_JSON) or defaults.
+# Format: {"model_name": {"input_per_1k": 0.0025, "output_per_1k": 0.01}}
+PRICING_DEFAULT: dict[str, dict[str, float]] = {}
+
+
+def _load_pricing() -> dict[str, dict[str, float]]:
+    raw = os.environ.get("CODEX_ORCH_PRICING_JSON")
+    if not raw:
+        return PRICING_DEFAULT
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return PRICING_DEFAULT
+    if not isinstance(data, dict):
+        return PRICING_DEFAULT
+    cleaned: dict[str, dict[str, float]] = {}
+    for model, cfg in data.items():
+        if not isinstance(cfg, dict):
+            continue
+        input_rate = cfg.get("input_per_1k")
+        output_rate = cfg.get("output_per_1k")
+        if isinstance(input_rate, (int, float)) and isinstance(
+            output_rate, (int, float)
+        ):
+            cleaned[model] = {
+                "input_per_1k": float(input_rate),
+                "output_per_1k": float(output_rate),
+            }
+    return cleaned
 
 
 def _load_spec(
@@ -221,6 +252,141 @@ def _status_loop(
         stop_event.wait(interval)
 
 
+def _usage_from_events(events_path: Path) -> tuple[int, int, int]:
+    """Return (input_tokens, output_tokens, rate_limit_hits) from an events log."""
+    if not events_path.exists():
+        return 0, 0, 0
+    total_in = total_out = rate_limits = 0
+    try:
+        for line in events_path.read_text().splitlines():
+            if "Rate limit reached" in line:
+                rate_limits += 1
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            usage = obj.get("usage") or {}
+            if isinstance(usage, dict):
+                total_in += int(usage.get("input_tokens") or 0)
+                total_out += int(usage.get("output_tokens") or 0)
+    except OSError:
+        return 0, 0, rate_limits
+    return total_in, total_out, rate_limits
+
+
+def _model_for_task(task: TaskRecord, config: RunState, orch: Orchestrator) -> str:
+    # Prefer explicit model flag in codex command.
+    if task.codex and task.codex.cmd:
+        if "--model" in task.codex.cmd:
+            idx = task.codex.cmd.index("--model")
+            if idx + 1 < len(task.codex.cmd):
+                return task.codex.cmd[idx + 1]
+    # Fall back to role config.
+    role_cfg = orch.config.role_for(task.role)
+    if role_cfg and role_cfg.model:
+        return role_cfg.model
+    return orch.config.codex.model or "unknown"
+
+
+def _format_table(rows: list[list[str]], headers: list[str]) -> str:
+    cols = list(zip(headers, *rows)) if rows else [(h,) for h in headers]
+    widths = [max(len(str(item)) for item in col) for col in cols]
+    def fmt(row: list[str]) -> str:
+        return " | ".join(f"{cell:<{widths[i]}}" for i, cell in enumerate(row))
+    lines = [fmt(headers), fmt(["-" * w for w in widths])]
+    lines.extend(fmt(row) for row in rows)
+    return "\n".join(lines)
+
+
+def _summarize_run(
+    orch: Orchestrator,
+    paths,
+    run_id: str,
+    state: RunState,
+    started_at: datetime,
+    finished_at: datetime,
+) -> None:
+    pricing = _load_pricing()
+    per_model = defaultdict(lambda: {"in": 0, "out": 0, "rate_limits": 0})
+    per_task_rows: list[list[str]] = []
+    for task in state.tasks:
+        events_path = task_dir(paths, run_id, task.task_id) / "events.jsonl"
+        tin, tout, rl = _usage_from_events(events_path)
+        model = _model_for_task(task, state, orch)
+        per_model[model]["in"] += tin
+        per_model[model]["out"] += tout
+        per_model[model]["rate_limits"] += rl
+        per_task_rows.append(
+            [
+                task.task_id,
+                task.role,
+                task.status.value,
+                model,
+                str(tin),
+                str(tout),
+                str(rl),
+            ]
+        )
+
+    # Per-task table
+    typer.echo("\nPer-task usage:")
+    if per_task_rows:
+        typer.echo(
+            _format_table(
+                per_task_rows,
+                ["Task", "Role", "Status", "Model", "Input", "Output", "RateLimits"],
+            )
+        )
+    else:
+        typer.echo("No tasks recorded.")
+
+    # Per-model aggregate
+    typer.echo("\nPer-model totals:")
+    model_rows: list[list[str]] = []
+    for model, stats in per_model.items():
+        total = stats["in"] + stats["out"]
+        price = pricing.get(model)
+        cost = "n/a"
+        if price:
+            cost_val = (
+                (stats["in"] / 1000.0) * price["input_per_1k"]
+                + (stats["out"] / 1000.0) * price["output_per_1k"]
+            )
+            cost = f"${cost_val:.4f}"
+        model_rows.append(
+            [
+                model,
+                str(stats["in"]),
+                str(stats["out"]),
+                str(total),
+                str(stats["rate_limits"]),
+                cost,
+            ]
+        )
+    if model_rows:
+        typer.echo(
+            _format_table(
+                model_rows,
+                ["Model", "Input", "Output", "Total", "RateLimits", "Cost"],
+            )
+        )
+    else:
+        typer.echo("No model usage recorded.")
+
+    total_in = sum(v["in"] for v in per_model.values())
+    total_out = sum(v["out"] for v in per_model.values())
+    total_rl = sum(v["rate_limits"] for v in per_model.values())
+    duration = finished_at - started_at
+    typer.echo(
+        f"\nRun summary: duration {duration}, total input {total_in}, total output {total_out}, rate-limit hits {total_rl}."
+    )
+    if not pricing:
+        typer.echo(
+            "Pricing not configured. Set CODEX_ORCH_PRICING_JSON to compute costs "
+            '(e.g., {"gpt-5.1-codex-mini":{"input_per_1k":0.00015,"output_per_1k":0.0006}}).'
+        )
+
+
 @app.command()
 def init(
     force: bool = typer.Option(
@@ -297,6 +463,7 @@ def run(
         )
         status_thread.start()
 
+    started_at = datetime.now(UTC)
     try:
         result = orchestrator.run(
             goal=goal, run_id=run_identifier, state_path=state_path
@@ -307,9 +474,18 @@ def run(
         if status_thread:
             status_thread.join(timeout=2)
 
+    finished_at = datetime.now(UTC)
     _render_status(paths, run_identifier, header="Final status")
     typer.echo(
         f"Run {run_identifier} completed with {len(result.tasks)} tasks recorded."
+    )
+    _summarize_run(
+        orch=orchestrator,
+        paths=paths,
+        run_id=run_identifier,
+        state=result,
+        started_at=started_at,
+        finished_at=finished_at,
     )
     if prune_on_complete:
         actions = _cleanup_run_artifacts(
