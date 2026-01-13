@@ -22,6 +22,7 @@ class RoleConfig:
     full_auto: bool = True
     output_schema: Path | None = None
     prompt_template: Path | None = None
+    model: str | None = None
 
 
 @dataclass

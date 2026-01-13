@@ -51,6 +51,7 @@ def load_config(
                 full_auto=bool(role_data.get("full_auto", True)),
                 output_schema=output_schema,
                 prompt_template=prompt_template,
+                model=role_data.get("model"),
             )
         )
 
@@ -111,6 +112,7 @@ def default_config() -> dict[str, Any]:
                 "full_auto": False,
                 "output_schema": "plan.schema.json",
                 "prompt_template": "navigator.md",
+                "model": "gpt-5.1-codex-max",
             },
             {
                 "name": "implementer",
@@ -127,6 +129,7 @@ def default_config() -> dict[str, Any]:
                 "full_auto": True,
                 "output_schema": "task_result.schema.json",
                 "prompt_template": "tester.md",
+                "model": "gpt-5.1-codex-mini",
             },
             {
                 "name": "reviewer",
@@ -135,6 +138,7 @@ def default_config() -> dict[str, Any]:
                 "full_auto": False,
                 "output_schema": "task_result.schema.json",
                 "prompt_template": "reviewer.md",
+                "model": "gpt-5.1-codex-max",
             },
         ],
     }

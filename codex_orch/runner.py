@@ -42,8 +42,9 @@ def build_codex_command(
         cmd += ["--profile", role.profile]
     if role.full_auto:
         cmd.append("--full-auto")
-    if codex.model:
-        cmd += ["--model", codex.model]
+    model = role.model or codex.model
+    if model:
+        cmd += ["--model", model]
     if schema_path:
         cmd += ["--output-schema", str(schema_path)]
     cmd += ["-o", str(output_path)]
