@@ -90,6 +90,7 @@ class OrchestratorConfig:
     codex: CodexConfig
     concurrency: ConcurrencyConfig
     use_single_workspace: bool = False
+    role_aliases: dict[str, str] = field(default_factory=dict)
 
     def role_for(self, name: str) -> RoleConfig | None:
         return next((role for role in self.roles if role.name == name), None)
@@ -234,18 +235,29 @@ class RunState:
     run_id: str
     tasks: list[TaskRecord] = field(default_factory=list)
     goal: str | None = None
+    spec_file: Path | None = None
+    spec_text: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "run_id": self.run_id,
             "goal": self.goal,
+            "spec_file": str(self.spec_file) if self.spec_file else None,
+            "spec_text": self.spec_text,
             "tasks": [t.to_dict() for t in self.tasks],
         }
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RunState":
         tasks = [TaskRecord.from_dict(t) for t in payload.get("tasks", [])]
-        return cls(run_id=payload["run_id"], tasks=tasks, goal=payload.get("goal"))
+        spec_file = payload.get("spec_file")
+        return cls(
+            run_id=payload["run_id"],
+            tasks=tasks,
+            goal=payload.get("goal"),
+            spec_file=Path(spec_file) if spec_file else None,
+            spec_text=payload.get("spec_text"),
+        )
 
 
 @dataclass

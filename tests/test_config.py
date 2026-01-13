@@ -22,3 +22,4 @@ def test_loads_default_config(tmp_path: Path) -> None:
     assert (
         config.role_for("implementer").output_schema.name == "task_result.schema.json"
     )
+    assert config.use_single_workspace is True

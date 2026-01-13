@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 import shutil
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import typer
 import yaml
 
 from .config import default_config
 from .models import RunState, TaskRecord, TaskStatus
-from .router import load_orchestrator
+from .router import Orchestrator, load_orchestrator
 from .state import load_state, save_state
 from .worktree import remove_worktree
 
@@ -35,9 +35,117 @@ def _state_path(paths, run_id: str) -> Path:
     return paths.runs / run_id / "state.json"
 
 
+PENDING_STATUSES = {
+    TaskStatus.PENDING,
+    TaskStatus.NEEDS_RETRY,
+    TaskStatus.FAILED,
+}
+
+SPEC_MAX_BYTES = 256 * 1024
+
+
+def _load_spec(
+    repo_root: Path, spec_file: Path | None
+) -> tuple[Path | None, str | None]:
+    if not spec_file:
+        return None, None
+    path = spec_file if spec_file.is_absolute() else repo_root / spec_file
+    if not path.exists() or not path.is_file():
+        typer.echo(f"Spec file not found or not a file: {path}")
+        raise typer.Exit(code=1)
+    size = path.stat().st_size
+    if size == 0:
+        typer.echo(f"Spec file is empty: {path}")
+        raise typer.Exit(code=1)
+    if size > SPEC_MAX_BYTES:
+        typer.echo(f"Spec file exceeds {SPEC_MAX_BYTES} bytes: {path}")
+        raise typer.Exit(code=1)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        typer.echo(f"Spec file must be UTF-8 text: {path}")
+        raise typer.Exit(code=1)
+    return path, text
+
+
+def _discover_run_ids(paths, explicit: list[str], older_than: int | None) -> list[str]:
+    run_base = paths.runs
+    if not run_base.exists():
+        return []
+    candidates = explicit or [p.name for p in run_base.iterdir() if p.is_dir()]
+    if older_than is None:
+        return sorted(candidates)
+
+    cutoff = datetime.now(UTC) - timedelta(days=older_than)
+    filtered: list[str] = []
+    for run_id in candidates:
+        run_dir = run_base / run_id
+        state_path = _state_path(paths, run_id)
+        target = state_path if state_path.exists() else run_dir
+        try:
+            mtime = datetime.fromtimestamp(target.stat().st_mtime, tz=UTC)
+        except FileNotFoundError:
+            continue
+        if mtime <= cutoff:
+            filtered.append(run_id)
+    return sorted(filtered)
+
+
+def _cleanup_run_artifacts(
+    orchestrator: Orchestrator,
+    run_id: str,
+    repo_root: Path,
+    state: RunState | None,
+    keep_branches: bool,
+) -> list[str]:
+    actions: list[str] = []
+    if orchestrator.config.use_single_workspace:
+        shared_spec = orchestrator.shared_workspace_spec(run_id)
+        target_path = (
+            next((Path(t.worktree_path) for t in state.tasks if t.worktree_path), None)
+            if state
+            else None
+        ) or shared_spec.path
+        target_branch = (
+            next((t.branch for t in state.tasks if t.branch), None) if state else None
+        ) or shared_spec.branch
+        if target_path and target_path.exists() and target_path != repo_root:
+            remove_worktree(
+                target_path,
+                repo_root,
+                keep_branch=keep_branches,
+                branch=target_branch,
+            )
+            actions.append(f"removed worktree {target_path}")
+        return actions
+
+    if state is None:
+        return actions
+
+    seen_paths: set[Path] = set()
+    for task in state.tasks:
+        if not task.worktree_path:
+            continue
+        worktree_path = Path(task.worktree_path)
+        if worktree_path in seen_paths:
+            continue
+        seen_paths.add(worktree_path)
+        if worktree_path.exists() and worktree_path != repo_root:
+            remove_worktree(
+                worktree_path,
+                repo_root,
+                keep_branch=keep_branches,
+                branch=task.branch,
+            )
+            actions.append(f"removed worktree {worktree_path}")
+    return actions
+
+
 @app.command()
 def init(
-    force: bool = typer.Option(False, "--force", help="Overwrite existing orchestrator files"),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite existing orchestrator files"
+    ),
 ) -> None:
     """Create .orchestrator layout with default config, schemas, and prompts."""
     repo_root = _repo_root()
@@ -65,13 +173,21 @@ def init(
 @app.command()
 def run(
     goal: str = typer.Argument(..., help="High-level goal for the navigator"),
-    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
     run_id: str | None = typer.Option(None, "--run-id", help="Run identifier"),
+    spec_file: Path | None = typer.Option(
+        None, "--spec-file", help="Path to a spec file to include in prompts"
+    ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
     run_identifier = run_id or datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
     orchestrator, paths = load_orchestrator(config_path, repo_root)
+    spec_path, spec_text = _load_spec(repo_root, spec_file)
+    orchestrator.spec_file = spec_path
+    orchestrator.spec_text = spec_text
     state_path = _state_path(paths, run_identifier)
     result = orchestrator.run(goal=goal, run_id=run_identifier, state_path=state_path)
     typer.echo(
@@ -83,14 +199,25 @@ def run(
 def task(
     role: str = typer.Option(..., "--role", help="Role to use"),
     prompt: str = typer.Argument(..., help="Prompt for the worker"),
-    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
     run_id: str | None = typer.Option(None, "--run-id", help="Run identifier"),
+    spec_file: Path | None = typer.Option(
+        None, "--spec-file", help="Path to a spec file to include in prompts"
+    ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
     run_identifier = run_id or datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
     orchestrator, paths = load_orchestrator(config_path, repo_root)
-    state = RunState(run_id=run_identifier, goal=prompt)
+    spec_path, spec_text = _load_spec(repo_root, spec_file)
+    orchestrator.spec_file = spec_path
+    orchestrator.spec_text = spec_text
+    orchestrator.goal = prompt
+    state = RunState(
+        run_id=run_identifier, goal=prompt, spec_file=spec_path, spec_text=spec_text
+    )
     state_path = _state_path(paths, run_identifier)
     save_state(state_path, state)
     record = TaskRecord(task_id="T0001", role=role, prompt=prompt)
@@ -103,13 +230,40 @@ def task(
 @app.command()
 def resume(
     run_id: str = typer.Option(..., "--run-id", help="Run identifier to resume"),
-    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
+    spec_file: Path | None = typer.Option(
+        None,
+        "--spec-file",
+        help="Override spec file path to use when resuming tasks (defaults to stored state)",
+    ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
     orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
+    if not state_path.exists():
+        typer.echo(f"State not found for run {run_id}: {state_path}")
+        raise typer.Exit(code=1)
     state = load_state(state_path)
+    stored_spec = state.spec_file
+    spec_path, spec_text = (
+        _load_spec(repo_root, spec_file)
+        if spec_file
+        else _load_spec(repo_root, stored_spec)  # type: ignore[arg-type]
+    )
+    if stored_spec and not spec_path:
+        typer.echo(
+            "Stored spec file missing. Provide --spec-file to resume with a valid spec."
+        )
+        raise typer.Exit(code=1)
+    state.spec_file = spec_path
+    state.spec_text = spec_text
+    save_state(state_path, state)
+    orchestrator.spec_file = spec_path
+    orchestrator.spec_text = spec_text
+    orchestrator.goal = state.goal
 
     pending = [
         t
@@ -128,11 +282,13 @@ def resume(
 @app.command()
 def report(
     run_id: str = typer.Option(..., "--run-id", help="Run identifier"),
-    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
-    _, paths = load_orchestrator(config_path, repo_root)
+    orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
         typer.echo(f"State not found for run {run_id}: {state_path}")
@@ -156,8 +312,12 @@ def report(
 @app.command()
 def clean(
     run_id: str = typer.Option(..., "--run-id", help="Run identifier"),
-    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
-    keep_branches: bool = typer.Option(False, "--keep-branches", help="Do not delete branches"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
+    keep_branches: bool = typer.Option(
+        False, "--keep-branches", help="Do not delete branches"
+    ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -168,7 +328,21 @@ def clean(
         raise typer.Exit(code=1)
     state = load_state(state_path)
     if orchestrator.config.use_single_workspace:
-        typer.echo("Single-workspace mode enabled; no worktrees to clean.")
+        spec = orchestrator.shared_workspace_spec(run_id)
+        target_path = next(
+            (t.worktree_path for t in state.tasks if t.worktree_path), spec.path
+        )
+        target_branch = next((t.branch for t in state.tasks if t.branch), spec.branch)
+        if not target_path or target_path == repo_root or not target_path.exists():
+            typer.echo("No shared worktree to clean for this run.")
+            return
+        remove_worktree(
+            target_path,
+            repo_root,
+            keep_branch=keep_branches,
+            branch=target_branch,
+        )
+        typer.echo(f"Cleaned shared worktree at {target_path}")
         return
     for task in state.tasks:
         if task.worktree_path:
@@ -184,14 +358,18 @@ def clean(
 @app.command()
 def merge(
     run_id: str = typer.Option(..., "--run-id", help="Run identifier"),
-    config: Path | None = typer.Option(None, "--config", help="Path to orchestrator YAML config"),
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
     allow_automerge: bool = typer.Option(
-        False, "--allow-automerge", help="Attempt git merge (fast-forward) for each task branch"
+        False,
+        "--allow-automerge",
+        help="Attempt git merge (fast-forward) for each task branch",
     ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
-    _, paths = load_orchestrator(config_path, repo_root)
+    orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
         typer.echo(f"State not found for run {run_id}: {state_path}")
@@ -208,21 +386,191 @@ def merge(
 
     import subprocess
 
-    for task in state.tasks:
-        if not task.branch:
-            continue
-        typer.echo(f"Merging branch {task.branch}...")
+    branches: list[str] = []
+    if orchestrator.config.use_single_workspace:
+        spec = orchestrator.shared_workspace_spec(run_id)
+        branch = next((t.branch for t in state.tasks if t.branch), spec.branch)
+        if branch:
+            branches = [branch]
+    else:
+        seen: set[str] = set()
+        for task in state.tasks:
+            if not task.branch or task.branch in seen:
+                continue
+            seen.add(task.branch)
+            branches.append(task.branch)
+
+    if not branches:
+        typer.echo("No branches recorded for merge.")
+        return
+
+    for branch in branches:
+        typer.echo(f"Merging branch {branch}...")
         result = subprocess.run(
-            ["git", "merge", "--ff-only", task.branch],
+            ["git", "merge", "--ff-only", branch],
             cwd=repo_root,
             capture_output=True,
             text=True,
         )
         if result.returncode != 0:
             typer.echo(result.stdout + result.stderr)
-            typer.echo(f"Merge failed for {task.branch}; resolve manually.")
+            typer.echo(f"Merge failed for {branch}; resolve manually.")
             break
     typer.echo("Merge step complete.")
+
+
+@app.command()
+def prune(
+    config: Path | None = typer.Option(
+        None, "--config", help="Path to orchestrator YAML config"
+    ),
+    spec_file: Path | None = typer.Option(
+        None,
+        "--spec-file",
+        help="Override spec file path to use when resuming tasks (defaults to stored state)",
+    ),
+    run_id: list[str] = typer.Option(
+        [],
+        "--run-id",
+        help="Run identifier(s) to prune; defaults to all runs.",
+    ),
+    older_than: int | None = typer.Option(
+        None,
+        "--older-than",
+        help="Only prune runs whose state is older than N days.",
+    ),
+    apply: bool = typer.Option(
+        False,
+        "--apply",
+        help="Apply cleanup; default is dry-run.",
+    ),
+    resume_pending: bool = typer.Option(
+        True,
+        "--resume-pending/--no-resume",
+        help="Resume pending/failed tasks before cleanup.",
+    ),
+    keep_branches: bool = typer.Option(
+        False,
+        "--keep-branches",
+        help="Do not delete branches when removing worktrees.",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Proceed with cleanup even if tasks fail to resume or remain pending.",
+    ),
+) -> None:
+    """Sweep runs, optionally resume pending tasks, and remove artifacts."""
+    repo_root = _repo_root()
+    config_path = config or _default_config_path(repo_root)
+    orchestrator, paths = load_orchestrator(config_path, repo_root)
+    run_ids = _discover_run_ids(paths, run_id, older_than)
+    if not run_ids:
+        typer.echo("No runs found to prune.")
+        return
+
+    runs_scanned = 0
+    runs_cleaned = 0
+    tasks_resumed = 0
+    failures = 0
+    forced_runs = 0
+    mode = "apply" if apply else "dry-run"
+    typer.echo(f"Prune ({mode}): processing {len(run_ids)} run(s).")
+
+    for rid in run_ids:
+        runs_scanned += 1
+        run_dir = paths.runs / rid
+        state_path = _state_path(paths, rid)
+        if not run_dir.exists():
+            typer.echo(f"- {rid}: run directory not found; skipping.")
+            failures += 1
+            continue
+        state = load_state(state_path) if state_path.exists() else None
+        stored_spec = state.spec_file if state else None
+        spec_path, spec_text = (
+            _load_spec(repo_root, spec_file)
+            if spec_file
+            else _load_spec(repo_root, stored_spec)  # type: ignore[arg-type]
+        )
+        if stored_spec and not spec_path:
+            failures += 1
+            typer.echo(
+                f"- {rid}: stored spec file missing; provide --spec-file to prune this run."
+            )
+            continue
+        if state:
+            state.spec_file = spec_path
+            state.spec_text = spec_text
+            save_state(state_path, state)
+        orchestrator.spec_file = spec_path
+        orchestrator.spec_text = spec_text
+        orchestrator.goal = state.goal if state else None
+        pending = (
+            [t for t in state.tasks if t.status in PENDING_STATUSES] if state else []
+        )
+
+        run_failed = False
+        resumed_count = 0
+        if resume_pending and pending:
+            for task in pending:
+                updated = orchestrator.run_task(rid, state_path, state, task)  # type: ignore[arg-type]
+                if updated.status != TaskStatus.COMPLETED:
+                    run_failed = True
+                else:
+                    resumed_count += 1
+            tasks_resumed += resumed_count
+            remaining = (
+                [t for t in state.tasks if t.status in PENDING_STATUSES]
+                if state
+                else []
+            )
+            if remaining:
+                run_failed = True
+        elif pending:
+            run_failed = True
+
+        forced_cleanup = run_failed and force
+
+        if run_failed and not force:
+            failures += 1
+            typer.echo(
+                f"- {rid}: pending/failed tasks remain; skipping cleanup (use --force to override)."
+            )
+            continue
+
+        if not apply:
+            typer.echo(
+                f"- {rid}: pending={len(pending)}, resumed={resumed_count}; would clean run dir and worktrees."
+            )
+            continue
+
+        actions = _cleanup_run_artifacts(
+            orchestrator=orchestrator,
+            run_id=rid,
+            repo_root=repo_root,
+            state=state,
+            keep_branches=keep_branches,
+        )
+        if run_dir.exists():
+            shutil.rmtree(run_dir)
+            actions.append(f"removed run dir {run_dir}")
+
+        runs_cleaned += 1
+        if forced_cleanup:
+            forced_runs += 1
+        elif run_failed:
+            failures += 1
+        detail = "; ".join(actions) if actions else "no artifacts removed"
+        typer.echo(f"- {rid}: cleaned ({detail})")
+
+    summary = (
+        f"Prune complete: scanned {runs_scanned}, cleaned {runs_cleaned}, "
+        f"resumed {tasks_resumed}, failures {failures}"
+    )
+    if forced_runs:
+        summary += f", forced {forced_runs}"
+    summary += "."
+    typer.echo(summary)
 
 
 def main() -> None:

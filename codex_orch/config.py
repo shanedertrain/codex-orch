@@ -58,7 +58,8 @@ def load_config(
     git = GitConfig(**(raw.get("git") or {}))
     codex = CodexConfig(**(raw.get("codex") or {}))
     concurrency = ConcurrencyConfig(**(raw.get("concurrency") or {}))
-    use_single_workspace = bool(raw.get("use_single_workspace", False))
+    use_single_workspace = bool(raw.get("use_single_workspace", True))
+    role_aliases = dict(raw.get("role_aliases") or {})
 
     config = OrchestratorConfig(
         roles=roles,
@@ -68,6 +69,7 @@ def load_config(
         codex=codex,
         concurrency=concurrency,
         use_single_workspace=use_single_workspace,
+        role_aliases=role_aliases,
     )
     return config, resolved_paths
 
@@ -88,12 +90,20 @@ def default_config() -> dict[str, Any]:
         "git": asdict(GitConfig()),
         "codex": asdict(CodexConfig()),
         "concurrency": asdict(ConcurrencyConfig()),
-        "use_single_workspace": False,
+        "use_single_workspace": True,
+        "role_aliases": {
+            "Researcher": "researcher",
+            "analysis": "researcher",
+            "Planner": "designer",
+            "Implementer": "implementer",
+            "developer": "implementer",
+            "Documenter": "implementer",
+        },
         "roles": [
             {
                 "name": "navigator",
                 "profile": "navigator",
-                "sandbox": "read-only",
+                "sandbox": "workspace-write",
                 "full_auto": False,
                 "output_schema": "plan.schema.json",
                 "prompt_template": "navigator.md",

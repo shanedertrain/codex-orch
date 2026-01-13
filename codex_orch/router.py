@@ -48,6 +48,8 @@ class Orchestrator:
         self.paths = paths
         self.repo_root = repo_root
         self.goal: str | None = None
+        self.spec_file: Path | None = None
+        self.spec_text: str | None = None
 
     def _branch_name(self, run_id: str, task: TaskRecord) -> str:
         today = datetime.now(UTC).date().isoformat()
@@ -58,15 +60,25 @@ class Orchestrator:
             role=task.role,
         )
 
+    def shared_workspace_spec(self, run_id: str) -> WorktreeSpec:
+        """Build a shared worktree spec for single-workspace runs."""
+        today = datetime.now(UTC).date().isoformat()
+        branch = self.config.git.branch_template.format(
+            date=today,
+            run_id=run_id,
+            task_id="workspace",
+            role="shared",
+        )
+        path = self.paths.worktrees / run_id
+        return WorktreeSpec(path=path, branch=branch, base_ref=self.config.git.base_ref)
+
     def _prepare_worktree(self, run_id: str, task: TaskRecord) -> WorktreeSpec:
         if self.config.use_single_workspace:
-            worktree_path = self.repo_root
-            branch = None
-            spec = WorktreeSpec(
-                path=worktree_path,
-                branch="single-workspace",
-                base_ref=self.config.git.base_ref,
-            )
+            spec = self.shared_workspace_spec(run_id)
+            worktree_path = task.worktree_path or spec.path
+            branch = task.branch or spec.branch
+            if worktree_path == spec.path and not worktree_path.exists():
+                create_worktree(spec, self.repo_root)
         else:
             worktree_path = self.paths.worktrees / f"{task.task_id}-{task.role}"
             branch = self._branch_name(run_id, task)
@@ -104,6 +116,11 @@ class Orchestrator:
     def _run_single_task(self, run_id: str, task: TaskRecord) -> TaskRecord:
         role_config = self.config.role_for(task.role)
         if not role_config:
+            alias = self.config.role_aliases.get(task.role)
+            if alias:
+                task.role = alias
+                role_config = self.config.role_for(alias)
+        if not role_config:
             task.status = TaskStatus.FAILED
             task.error = f"Role not found in config: {task.role}"
             return task
@@ -123,6 +140,8 @@ class Orchestrator:
                 goal=self.goal or task.prompt,
                 prompt=task.prompt,
             )
+        if self.spec_text:
+            rendered_prompt = f"{rendered_prompt}\n\nSpecification:\n{self.spec_text}"
 
         cmd = build_codex_command(
             role=role_config,
@@ -195,7 +214,9 @@ class Orchestrator:
         self.paths.worktrees.mkdir(parents=True, exist_ok=True)
         self.paths.runs.mkdir(parents=True, exist_ok=True)
 
-        run_state = RunState(run_id=run_id, goal=goal)
+        run_state = RunState(
+            run_id=run_id, goal=goal, spec_file=self.spec_file, spec_text=self.spec_text
+        )
         save_state(state_path, run_state)
         navigator_role = self.config.role_for("navigator")
         if not navigator_role:
