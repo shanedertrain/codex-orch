@@ -60,6 +60,7 @@ def load_config(
     concurrency = ConcurrencyConfig(**(raw.get("concurrency") or {}))
     use_single_workspace = bool(raw.get("use_single_workspace", True))
     role_aliases = dict(raw.get("role_aliases") or {})
+    warm_tldr = bool(raw.get("warm_tldr", True))
 
     config = OrchestratorConfig(
         roles=roles,
@@ -70,6 +71,7 @@ def load_config(
         concurrency=concurrency,
         use_single_workspace=use_single_workspace,
         role_aliases=role_aliases,
+        warm_tldr=warm_tldr,
     )
     return config, resolved_paths
 
@@ -91,14 +93,20 @@ def default_config() -> dict[str, Any]:
         "codex": asdict(CodexConfig()),
         "concurrency": asdict(ConcurrencyConfig()),
         "use_single_workspace": True,
+        "warm_tldr": True,
         "role_aliases": {
             "Researcher": "researcher",
             "analysis": "researcher",
             "Planner": "designer",
             "Implementer": "implementer",
             "developer": "implementer",
-            "Documenter": "implementer",
-        },
+        "Documenter": "implementer",
+        "explorer": "researcher",
+        "coder": "implementer",
+        "dev": "implementer",
+        "self": "implementer",
+        "user": "implementer",
+    },
         "roles": [
             {
                 "name": "navigator",

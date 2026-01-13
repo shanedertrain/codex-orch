@@ -13,11 +13,16 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["role", "prompt", "acceptance"],
+        "required": ["role", "prompt", "acceptance", "blocked_by"],
         "properties": {
           "role": { "type": "string" },
           "prompt": { "type": "string" },
-          "acceptance": { "type": "string" }
+          "acceptance": { "type": "string" },
+          "blocked_by": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "id": { "type": "string" }
         },
         "additionalProperties": false
       }

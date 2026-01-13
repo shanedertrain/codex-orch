@@ -78,7 +78,7 @@ def test_run_task_appends_spec_to_prompt(monkeypatch, tmp_path: Path) -> None:
 
     captured: dict[str, str] = {}
 
-    def fake_run_codex(cmd, jsonl_log_path, output_path):
+    def fake_run_codex(cmd, jsonl_log_path, output_path, env=None):
         captured["prompt"] = cmd[-1]
         output = {
             "summary": "done",

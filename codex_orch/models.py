@@ -26,7 +26,7 @@ class RoleConfig:
 
 @dataclass
 class LimitsConfig:
-    max_workers: int = 1
+    max_workers: int = 4
     max_tasks: int = 50
     max_iterations: int = 10
     retry_limit: int = 1
@@ -91,6 +91,7 @@ class OrchestratorConfig:
     concurrency: ConcurrencyConfig
     use_single_workspace: bool = False
     role_aliases: dict[str, str] = field(default_factory=dict)
+    warm_tldr: bool = True
 
     def role_for(self, name: str) -> RoleConfig | None:
         return next((role for role in self.roles if role.name == name), None)
@@ -165,6 +166,7 @@ class TaskRecord:
     result: TaskResult | PlanResult | None = None
     error: str | None = None
     attempts: int = 0
+    blocked_by: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {
@@ -176,6 +178,7 @@ class TaskRecord:
             "branch": self.branch,
             "attempts": self.attempts,
             "error": self.error,
+            "blocked_by": self.blocked_by,
         }
         if self.codex:
             data["codex"] = {
@@ -227,6 +230,7 @@ class TaskRecord:
             result=result,
             error=payload.get("error"),
             attempts=payload.get("attempts", 0),
+            blocked_by=payload.get("blocked_by", []),
         )
 
 
@@ -265,6 +269,8 @@ class PlanTask:
     role: str
     prompt: str
     acceptance: str | None = None
+    blocked_by: list[str] = field(default_factory=list)
+    id: str | None = None
 
 
 @dataclass
@@ -276,7 +282,21 @@ class PlanResult:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PlanResult":
         tasks_payload = payload.get("tasks") or []
-        tasks = [PlanTask(**item) for item in tasks_payload if isinstance(item, dict)]
+        tasks = []
+        for item in tasks_payload:
+            if not isinstance(item, dict):
+                continue
+            blocked_by = list(item.get("blocked_by") or [])
+            plan_id = item.get("id")
+            tasks.append(
+                PlanTask(
+                    role=item["role"],
+                    prompt=item["prompt"],
+                    acceptance=item.get("acceptance"),
+                    blocked_by=blocked_by,
+                    id=plan_id,
+                )
+            )
         return cls(
             goal=payload.get("goal"),
             assumptions=list(payload.get("assumptions", [])),

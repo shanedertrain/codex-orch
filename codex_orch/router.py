@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import json
+import threading
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+import os
 
 import jsonschema
 
@@ -50,6 +54,21 @@ class Orchestrator:
         self.goal: str | None = None
         self.spec_file: Path | None = None
         self.spec_text: str | None = None
+        self._state_lock = threading.Lock()
+        self._cached_allowed_roles: tuple[str, str] | None = None
+
+    def _allowed_roles_text(self) -> tuple[str, str]:
+        if self._cached_allowed_roles:
+            return self._cached_allowed_roles
+        role_names = sorted({role.name for role in self.config.roles})
+        alias_pairs = [
+            f"{alias}->{target}"
+            for alias, target in sorted(self.config.role_aliases.items())
+        ]
+        allowed = ", ".join(role_names)
+        aliases = ", ".join(alias_pairs)
+        self._cached_allowed_roles = (allowed, aliases)
+        return allowed, aliases
 
     def _branch_name(self, run_id: str, task: TaskRecord) -> str:
         today = datetime.now(UTC).date().isoformat()
@@ -90,6 +109,21 @@ class Orchestrator:
         task.worktree_path = worktree_path
         task.branch = branch
         return spec
+
+    def _warm_tldr(self) -> None:
+        if not self.config.warm_tldr:
+            return
+        try:
+            subprocess.run(
+                ["poetry", "run", "tldr", "warm", "."],
+                cwd=self.repo_root,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            # If poetry/tldr is missing, continue without blocking the run.
+            return
 
     def _append_decisions(self, run_id: str, task: TaskRecord) -> None:
         # Only TaskResult (non-navigator) carries decisions; navigator PlanResult does not.
@@ -139,6 +173,8 @@ class Orchestrator:
                 prompt_template,
                 goal=self.goal or task.prompt,
                 prompt=task.prompt,
+                allowed_roles=self._allowed_roles_text()[0],
+                role_aliases=self._allowed_roles_text()[1],
             )
         if self.spec_text:
             rendered_prompt = f"{rendered_prompt}\n\nSpecification:\n{self.spec_text}"
@@ -152,8 +188,18 @@ class Orchestrator:
             codex=self.config.codex,
         )
 
+        env = None
+        mem_src = self.repo_root / "app/common/codex-mem/src"
+        if mem_src.exists():
+            env = os.environ.copy()
+            pythonpath_parts = [str(mem_src)]
+            existing = env.get("PYTHONPATH")
+            if existing:
+                pythonpath_parts.append(existing)
+            env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+
         execution = run_codex_process(
-            cmd, jsonl_log_path=jsonl_path, output_path=output_path
+            cmd, jsonl_log_path=jsonl_path, output_path=output_path, env=env
         )
         task.attempts += 1
         task.codex = task.codex
@@ -190,7 +236,12 @@ class Orchestrator:
         return task
 
     def run_task(
-        self, run_id: str, state_path: Path, state: RunState, task: TaskRecord
+        self,
+        run_id: str,
+        state_path: Path,
+        state: RunState,
+        task: TaskRecord,
+        state_lock: threading.Lock | None = None,
     ) -> TaskRecord:
         retry_limit = self.config.limits.retry_limit
         updated = self._run_single_task(run_id, task)
@@ -203,9 +254,18 @@ class Orchestrator:
             updated = self._run_single_task(run_id, updated)
 
         if updated.status == TaskStatus.COMPLETED and updated.result:
-            self._append_decisions(run_id, updated)
-        upsert_task(state, updated)
-        save_state(state_path, state)
+            if state_lock:
+                with state_lock:
+                    self._append_decisions(run_id, updated)
+            else:
+                self._append_decisions(run_id, updated)
+        if state_lock:
+            with state_lock:
+                upsert_task(state, updated)
+                save_state(state_path, state)
+        else:
+            upsert_task(state, updated)
+            save_state(state_path, state)
         return updated
 
     def run(self, goal: str, run_id: str, state_path: Path) -> RunState:
@@ -213,6 +273,7 @@ class Orchestrator:
         self.paths.base.mkdir(parents=True, exist_ok=True)
         self.paths.worktrees.mkdir(parents=True, exist_ok=True)
         self.paths.runs.mkdir(parents=True, exist_ok=True)
+        self._warm_tldr()
 
         run_state = RunState(
             run_id=run_id, goal=goal, spec_file=self.spec_file, spec_text=self.spec_text
@@ -225,8 +286,19 @@ class Orchestrator:
         navigator_prompt = goal
         if navigator_role.prompt_template:
             navigator_prompt = render_template(
-                navigator_role.prompt_template, goal=goal, prompt=goal
+                navigator_role.prompt_template,
+                goal=goal,
+                prompt=goal,
+                allowed_roles=self._allowed_roles_text()[0],
+                role_aliases=self._allowed_roles_text()[1],
             )
+        else:
+            allowed_roles, aliases = self._allowed_roles_text()
+            navigator_prompt = (
+                f"{navigator_prompt}\n\nAllowed roles: {allowed_roles}."
+            )
+            if aliases:
+                navigator_prompt += f" Aliases: {aliases}."
 
         navigator_task = TaskRecord(
             task_id="T0001", role="navigator", prompt=navigator_prompt
@@ -240,32 +312,154 @@ class Orchestrator:
 
         plan_payload = nav_result.result
         tasks_data = plan_payload.tasks
-        queue: list[TaskRecord] = []
+
+        # Validate roles before enqueuing tasks; fail fast if plan includes
+        # roles outside the configured set (after alias resolution).
+        invalid_roles: set[str] = set()
+        for item in tasks_data:
+            resolved = self.config.role_aliases.get(item.role, item.role)
+            if not self.config.role_for(resolved):
+                invalid_roles.add(item.role)
+        if invalid_roles:
+            nav_result.status = TaskStatus.FAILED
+            nav_result.error = (
+                "Plan contains invalid roles: "
+                + ", ".join(sorted(invalid_roles))
+                + f". Allowed: {', '.join(sorted({r.name for r in self.config.roles}))}."
+            )
+            upsert_task(run_state, nav_result)
+            save_state(state_path, run_state)
+            return run_state
+
+        limit = self.config.limits.max_tasks
+        plan_id_map: dict[str, str] = {}
+        planned_tasks: list[tuple[str, TaskRecord]] = []
         next_index = 2
         for item in tasks_data:
             task_id = f"T{next_index:04d}"
-            queue.append(
-                TaskRecord(task_id=task_id, role=item.role, prompt=item.prompt)
+            plan_key = item.id or task_id
+            plan_id_map[plan_key] = task_id
+            planned_tasks.append(
+                (
+                    task_id,
+                    TaskRecord(
+                        task_id=task_id,
+                        role=item.role,
+                        prompt=item.prompt,
+                        blocked_by=item.blocked_by,
+                    ),
+                )
             )
             next_index += 1
 
-        limit = self.config.limits.max_tasks
+        tasks_by_id: dict[str, TaskRecord] = {}
+        for task_id, task in planned_tasks:
+            mapped_blockers = [plan_id_map.get(dep, dep) for dep in task.blocked_by]
+            task.blocked_by = mapped_blockers
+            resolved_role = self.config.role_aliases.get(task.role, task.role)
+            if not self.config.role_for(resolved_role):
+                task.status = TaskStatus.FAILED
+                task.error = f"Role not found in config: {resolved_role}"
+                tasks_by_id[task_id] = task
+                upsert_task(run_state, task)
+                continue
+            task.role = resolved_role
+            tasks_by_id[task_id] = task
+            upsert_task(run_state, task)
+        save_state(state_path, run_state)
+
+        pending = {tid for tid, t in tasks_by_id.items() if t.status == TaskStatus.PENDING}
+        running: dict[Any, str] = {}
         iterations = 0
-        while (
-            queue
-            and len(run_state.tasks) < limit
-            and iterations < self.config.limits.max_iterations
-        ):
-            current = queue.pop(0)
-            updated = self.run_task(run_id, state_path, run_state, current)
-            if updated.result and updated.result.next_tasks:
-                for nxt in updated.result.next_tasks:
-                    task_id = f"T{next_index:04d}"
-                    queue.append(
-                        TaskRecord(task_id=task_id, role=nxt.role, prompt=nxt.prompt)
-                    )
-                    next_index += 1
-            iterations += 1
+        max_workers = max(1, self.config.limits.max_workers)
+
+        def persist(task: TaskRecord) -> None:
+            if self._state_lock:
+                with self._state_lock:
+                    upsert_task(run_state, task)
+                    save_state(state_path, run_state)
+            else:
+                upsert_task(run_state, task)
+                save_state(state_path, run_state)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while (
+                pending
+                and len(run_state.tasks) < limit
+                and iterations < self.config.limits.max_iterations
+            ):
+                progress = False
+                for task_id in list(pending):
+                    if len(running) >= max_workers:
+                        break
+                    task = tasks_by_id[task_id]
+                    missing = [dep for dep in task.blocked_by if dep not in tasks_by_id]
+                    if missing:
+                        task.status = TaskStatus.FAILED
+                        task.error = f"Missing dependencies: {', '.join(missing)}"
+                        persist(task)
+                        pending.remove(task_id)
+                        progress = True
+                        continue
+                    dep_statuses = [tasks_by_id[dep].status for dep in task.blocked_by]
+                    if any(
+                        status in {TaskStatus.FAILED, TaskStatus.NEEDS_RETRY}
+                        for status in dep_statuses
+                    ):
+                        task.status = TaskStatus.FAILED
+                        failed_deps = [
+                            dep for dep in task.blocked_by if tasks_by_id[dep].status != TaskStatus.COMPLETED
+                        ]
+                        task.error = (
+                            "Blocked because dependencies failed: "
+                            + ", ".join(failed_deps)
+                        )
+                        persist(task)
+                        pending.remove(task_id)
+                        progress = True
+                        continue
+                    if all(status == TaskStatus.COMPLETED for status in dep_statuses):
+                        task.status = TaskStatus.RUNNING
+                        persist(task)
+                        future = executor.submit(
+                            self.run_task,
+                            run_id,
+                            state_path,
+                            run_state,
+                            task,
+                            self._state_lock,
+                        )
+                        running[future] = task_id
+                        pending.remove(task_id)
+                        progress = True
+                if not running and not progress:
+                    for task_id in list(pending):
+                        task = tasks_by_id[task_id]
+                        task.status = TaskStatus.FAILED
+                        task.error = "Blocked by unmet dependencies"
+                        persist(task)
+                        pending.remove(task_id)
+                    break
+
+                if not running:
+                    break
+
+                done, _ = wait(running.keys(), return_when=FIRST_COMPLETED)
+                for future in done:
+                    finished_id = running.pop(future)
+                    updated = future.result()
+                    tasks_by_id[finished_id] = updated
+                    if updated.result and updated.result.next_tasks:
+                        for nxt in updated.result.next_tasks:
+                            task_id = f"T{next_index:04d}"
+                            new_task = TaskRecord(
+                                task_id=task_id, role=nxt.role, prompt=nxt.prompt
+                            )
+                            tasks_by_id[task_id] = new_task
+                            pending.add(task_id)
+                            persist(new_task)
+                            next_index += 1
+                iterations += 1
         return run_state
 
 

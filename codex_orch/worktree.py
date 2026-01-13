@@ -44,6 +44,14 @@ def create_worktree(spec: WorktreeSpec, repo_root: Path) -> None:
     )
     if add_proc.returncode != 0:
         raise WorktreeError(add_proc.stderr.strip() or "Failed to create worktree")
+    init_proc = _run_git(
+        ["submodule", "update", "--init", "--recursive"],
+        cwd=spec.path,
+    )
+    if init_proc.returncode != 0:
+        raise WorktreeError(
+            init_proc.stderr.strip() or "Failed to initialize submodules"
+        )
 
 
 def remove_worktree(

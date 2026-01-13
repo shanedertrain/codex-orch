@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,7 @@ def run_codex_process(
     cmd: list[str],
     jsonl_log_path: Path,
     output_path: Path,
+    env: dict[str, str] | None = None,
 ) -> CodexExecutionResult:
     jsonl_capture = JsonlCapture(jsonl_log_path)
     output_data: dict[str, Any] | None = None
@@ -65,6 +67,7 @@ def run_codex_process(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        env=env or os.environ.copy(),
     ) as proc:
         assert proc.stdout is not None
         for line in proc.stdout:
@@ -77,6 +80,10 @@ def run_codex_process(
         if output_path.exists():
             try:
                 output_data = json.loads(output_path.read_text())
+                # Re-write as pretty JSON for readability of final.json.
+                output_path.write_text(
+                    json.dumps(output_data, indent=2, ensure_ascii=False)
+                )
             except json.JSONDecodeError:
                 output_data = None
         return CodexExecutionResult(

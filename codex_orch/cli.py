@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import shutil
+import threading
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import typer
@@ -8,7 +10,7 @@ import yaml
 
 from .config import default_config
 from .models import RunState, TaskRecord, TaskStatus
-from .router import Orchestrator, load_orchestrator
+from .router import Orchestrator, load_orchestrator, task_dir
 from .state import load_state, save_state
 from .worktree import remove_worktree
 
@@ -141,6 +143,77 @@ def _cleanup_run_artifacts(
     return actions
 
 
+def _status_color(status: TaskStatus) -> str:
+    if status == TaskStatus.COMPLETED:
+        return "green"
+    if status == TaskStatus.RUNNING:
+        return "yellow"
+    # pending/failed/needs_retry are treated as not started/blocked
+    return "red"
+
+
+def _shorten(text: str, limit: int = 120) -> str:
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
+def _last_activity(paths, run_id: str, task_id: str, fallback: str | None) -> str | None:
+    events_path = task_dir(paths, run_id, task_id) / "events.jsonl"
+    if not events_path.exists():
+        return fallback
+    try:
+        lines = events_path.read_text().strip().splitlines()
+    except OSError:
+        return fallback
+    for line in reversed(lines):
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        text = obj.get("text")
+        item = obj.get("item") or {}
+        if not text and isinstance(item, dict):
+            if item.get("type") == "command_execution":
+                text = item.get("command")
+            elif item.get("type") == "mcp_tool_call":
+                text = f"tool {item.get('tool')}"
+            elif item.get("type") == "agent_message":
+                text = item.get("text")
+        if text:
+            return _shorten(str(text))
+    return fallback
+
+
+def _render_status(paths, run_id: str, header: str | None = None) -> None:
+    state_path = _state_path(paths, run_id)
+    if header:
+        typer.echo(f"{header} ({datetime.now().isoformat(timespec='seconds')})")
+    if not state_path.exists():
+        typer.echo("No state file yet.")
+        return
+    try:
+        state = load_state(state_path)
+    except Exception as exc:  # pragma: no cover - defensive
+        typer.echo(f"Could not read state: {exc}")
+        return
+    for task in state.tasks:
+        color = _status_color(task.status)
+        status_text = typer.style(task.status.value, fg=color)
+        typer.echo(
+            f"{task.task_id} [{task.role}] {status_text} - {_shorten(task.prompt)}"
+        )
+        detail = _last_activity(paths, run_id, task.task_id, task.prompt)
+        if detail:
+            typer.echo(f"    {detail}")
+
+
+def _status_loop(
+    paths, run_id: str, stop_event: threading.Event, interval: float
+) -> None:
+    while not stop_event.is_set():
+        _render_status(paths, run_id)
+        stop_event.wait(interval)
+
+
 @app.command()
 def init(
     force: bool = typer.Option(
@@ -180,6 +253,17 @@ def run(
     spec_file: Path | None = typer.Option(
         None, "--spec-file", help="Path to a spec file to include in prompts"
     ),
+    status_interval: float = typer.Option(
+        3.0,
+        "--status-interval",
+        help="Seconds between status updates while the run is active.",
+        min=0.2,
+    ),
+    show_status: bool = typer.Option(
+        True,
+        "--status/--no-status",
+        help="Show live task status while the run is active.",
+    ),
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
@@ -189,7 +273,29 @@ def run(
     orchestrator.spec_file = spec_path
     orchestrator.spec_text = spec_text
     state_path = _state_path(paths, run_identifier)
-    result = orchestrator.run(goal=goal, run_id=run_identifier, state_path=state_path)
+    stop_event: threading.Event | None = None
+    status_thread: threading.Thread | None = None
+
+    if show_status:
+        stop_event = threading.Event()
+        status_thread = threading.Thread(
+            target=_status_loop,
+            args=(paths, run_identifier, stop_event, status_interval),
+            daemon=True,
+        )
+        status_thread.start()
+
+    try:
+        result = orchestrator.run(
+            goal=goal, run_id=run_identifier, state_path=state_path
+        )
+    finally:
+        if stop_event:
+            stop_event.set()
+        if status_thread:
+            status_thread.join(timeout=2)
+
+    _render_status(paths, run_identifier, header="Final status")
     typer.echo(
         f"Run {run_identifier} completed with {len(result.tasks)} tasks recorded."
     )
