@@ -50,7 +50,14 @@ PENDING_STATUSES = {
 SPEC_MAX_BYTES = 256 * 1024
 # Optional pricing table sourced from env (CODEX_ORCH_PRICING_JSON) or defaults.
 # Format: {"model_name": {"input_per_1k": 0.0025, "output_per_1k": 0.01}}
-PRICING_DEFAULT: dict[str, dict[str, float]] = {}
+PRICING_DEFAULT: dict[str, dict[str, float]] = {
+    # Standard tier codex models (prices per 1K tokens).
+    "gpt-5.1-codex-max": {"input_per_1k": 0.00125, "output_per_1k": 0.01},
+    "gpt-5.1-codex": {"input_per_1k": 0.00125, "output_per_1k": 0.01},
+    "gpt-5-codex": {"input_per_1k": 0.00125, "output_per_1k": 0.01},
+    "gpt-5.1-codex-mini": {"input_per_1k": 0.00025, "output_per_1k": 0.002},
+    "codex-mini-latest": {"input_per_1k": 0.0015, "output_per_1k": 0.006},
+}
 
 
 def _load_pricing() -> dict[str, dict[str, float]]:
