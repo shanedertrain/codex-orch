@@ -84,6 +84,21 @@ PRICING_DEFAULT: dict[str, dict[str, float]] = {
 }
 
 
+def _ensure_initialized(config_path: Path, repo_root: Path) -> None:
+    if config_path.exists():
+        return
+    base_dir = config_path.parent
+    base_dir.mkdir(parents=True, exist_ok=True)
+    config = default_config()
+    config_path.write_text(yaml.safe_dump(config))
+    templates_dir = _templates_dir()
+    for sub in ("schemas", "prompts"):
+        src = templates_dir / sub
+        dst = base_dir / sub
+        if not dst.exists():
+            shutil.copytree(src, dst)
+
+
 def _load_pricing() -> dict[str, dict[str, float]]:
     raw = os.environ.get("CODEX_ORCH_PRICING_JSON")
     if not raw:
@@ -588,6 +603,7 @@ def run(
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
+    _ensure_initialized(config_path, repo_root)
     run_identifier = run_id or datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
     orchestrator, paths = load_orchestrator(config_path, repo_root)
     plan_path, plan_text, plan_result = _load_plan(repo_root, plan_file, _templates_dir() / "schemas")
@@ -669,6 +685,7 @@ def task(
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
+    _ensure_initialized(config_path, repo_root)
     run_identifier = run_id or datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
     orchestrator, paths = load_orchestrator(config_path, repo_root)
     spec_path, spec_text = _load_spec(repo_root, spec_file)
@@ -712,6 +729,7 @@ def validate(
     """Run validation (lint/tests) against a completed run's workspace."""
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
+    _ensure_initialized(config_path, repo_root)
     orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
@@ -820,6 +838,7 @@ def report(
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
+    _ensure_initialized(config_path, repo_root)
     orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
@@ -853,6 +872,7 @@ def clean(
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
+    _ensure_initialized(config_path, repo_root)
     orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
