@@ -428,17 +428,8 @@ def _usage_from_events(events_path: Path) -> tuple[int, int, int]:
 
 
 def _model_for_task(task: TaskRecord, config: RunState, orch: Orchestrator) -> str:
-    # Prefer explicit model flag in codex command.
-    if task.codex and task.codex.cmd:
-        if "--model" in task.codex.cmd:
-            idx = task.codex.cmd.index("--model")
-            if idx + 1 < len(task.codex.cmd):
-                return task.codex.cmd[idx + 1]
-    # Fall back to role config.
-    role_cfg = orch.config.role_for(task.role)
-    if role_cfg and role_cfg.model:
-        return role_cfg.model
-    return orch.config.codex.model or "unknown"
+    # Models are no longer configurable; use system default.
+    return "system-default"
 
 
 def _format_table(rows: list[list[str]], headers: list[str]) -> str:

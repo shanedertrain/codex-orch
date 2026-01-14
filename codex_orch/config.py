@@ -37,6 +37,7 @@ def load_config(
     roles: list[RoleConfig] = []
     for item in raw_roles:
         role_data = dict(item)
+        role_data.pop("model", None)
         output_schema = _path_from_config(
             role_data.get("output_schema"), resolved_paths.schemas
         )
@@ -51,13 +52,14 @@ def load_config(
                 full_auto=bool(role_data.get("full_auto", True)),
                 output_schema=output_schema,
                 prompt_template=prompt_template,
-                model=role_data.get("model"),
             )
         )
 
     limits = LimitsConfig(**(raw.get("limits") or {}))
     git = GitConfig(**(raw.get("git") or {}))
-    codex = CodexConfig(**(raw.get("codex") or {}))
+    codex_raw = dict(raw.get("codex") or {})
+    codex_raw.pop("model", None)
+    codex = CodexConfig(**codex_raw)
     concurrency = ConcurrencyConfig(**(raw.get("concurrency") or {}))
     use_single_workspace = bool(raw.get("use_single_workspace", True))
     role_aliases = dict(raw.get("role_aliases") or {})
@@ -112,7 +114,6 @@ def default_config() -> dict[str, Any]:
                 "full_auto": False,
                 "output_schema": "plan.schema.json",
                 "prompt_template": "navigator.md",
-                "model": "gpt-5.1-codex-max",
             },
             {
                 "name": "implementer",
@@ -121,7 +122,6 @@ def default_config() -> dict[str, Any]:
                 "full_auto": False,
                 "output_schema": "task_result.schema.json",
                 "prompt_template": "implementer.md",
-                "model": "gpt-5.1-codex-mini",
             },
             {
                 "name": "tester",
@@ -130,7 +130,6 @@ def default_config() -> dict[str, Any]:
                 "full_auto": False,
                 "output_schema": "task_result.schema.json",
                 "prompt_template": "tester.md",
-                "model": "gpt-5.1-codex-mini",
             },
             {
                 "name": "reviewer",
@@ -139,7 +138,6 @@ def default_config() -> dict[str, Any]:
                 "full_auto": False,
                 "output_schema": "task_result.schema.json",
                 "prompt_template": "reviewer.md",
-                "model": "gpt-5.1-codex-max",
             },
         ],
     }

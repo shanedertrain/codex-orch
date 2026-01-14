@@ -22,7 +22,6 @@ class RoleConfig:
     full_auto: bool = True
     output_schema: Path | None = None
     prompt_template: Path | None = None
-    model: str | None = None
 
 
 @dataclass
@@ -79,7 +78,6 @@ class ConcurrencyConfig:
 
 @dataclass
 class CodexConfig:
-    model: str | None = None
     extra_flags: list[str] = field(default_factory=list)
 
 
