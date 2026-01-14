@@ -12,8 +12,9 @@ poetry run codex-orch init    # or codex-orch init if installed globally
 ```
 
 ## Usage
-- `codex-orch run --goal "Add feature X"` — run navigator then execute planned tasks.
-- `codex-orch task --role implementer "Fix bug"` — run a single role.
+- `codex-orch run --plan-file specs/feature_implementation_plan.json [--spec-file specs/feature.md]` — execute a finalized plan file (no navigator prompting).
+- `codex-orch task --role implementer "Fix bug"` — run a single role prompt.
+- codex-mem MCP server is started automatically if `scripts/start_codex_mem.sh` is present; logs under `.codex-mem/`.
 - `codex-orch resume --run-id run-...` — re-run pending/failed tasks.
 - `codex-orch report --run-id run-...` — write a markdown summary.
 - `codex-orch clean --run-id run-...` — remove worktrees (keep branches with `--keep-branches`).

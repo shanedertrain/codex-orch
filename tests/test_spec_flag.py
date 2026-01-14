@@ -52,8 +52,8 @@ def test_run_task_appends_spec_to_prompt(monkeypatch, tmp_path: Path) -> None:
 
     roles = [
         RoleConfig(
-            name="navigator",
-            profile="navigator",
+            name="implementer",
+            profile="implementer",
             sandbox="workspace-write",
             full_auto=True,
             output_schema=None,
@@ -107,7 +107,7 @@ def test_run_task_appends_spec_to_prompt(monkeypatch, tmp_path: Path) -> None:
         spec_text=orchestrator.spec_text,
     )
     state_path = paths.runs / "run-1" / "state.json"
-    task = TaskRecord(task_id="T0001", role="navigator", prompt="Do work")
+    task = TaskRecord(task_id="T0001", role="implementer", prompt="Do work")
 
     orchestrator.run_task("run-1", state_path, state, task)
 

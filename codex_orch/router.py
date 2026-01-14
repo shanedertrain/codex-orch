@@ -86,20 +86,8 @@ class Orchestrator:
         tasks: dict[str, TaskRecord],
         skip_task_id: str | None = None,
     ) -> list[str]:
-        """Return blockers based on role ordering (navigator->implementer->reviewer->tester)."""
-        if role not in self._role_order:
-            return []
-        idx = self._role_order.index(role)
-        if idx == 0:
-            return []
-        prev_role = self._role_order[idx - 1]
-        blockers: list[str] = []
-        for task_id, task in tasks.items():
-            if task_id == skip_task_id:
-                continue
-            if task.role == prev_role:
-                blockers.append(task_id)
-        return blockers
+        """Role-based blockers disabled; rely on explicit blocked_by only."""
+        return []
 
     def _branch_name(self, run_id: str, task: TaskRecord) -> str:
         today = datetime.now(UTC).date().isoformat()
@@ -214,15 +202,20 @@ class Orchestrator:
         jsonschema.validate(output, schema)
 
     def _run_single_task(self, run_id: str, task: TaskRecord) -> TaskRecord:
-        role_config = self.config.role_for(task.role)
+        role_name = task.role or (self.config.roles[0].name if self.config.roles else "worker")
+        role_config = self.config.role_for(role_name)
         if not role_config:
-            alias = self.config.role_aliases.get(task.role)
+            alias = self.config.role_aliases.get(role_name)
             if alias:
                 task.role = alias
                 role_config = self.config.role_for(alias)
+        if not role_config and self.config.roles:
+            # Fallback to first configured role when role is unknown.
+            role_config = self.config.roles[0]
+            task.role = role_config.name
         if not role_config:
             task.status = TaskStatus.FAILED
-            task.error = f"Role not found in config: {task.role}"
+            task.error = f"Role not found in config and no fallback available: {task.role}"
             return task
 
         spec = self._prepare_worktree(run_id, task)
@@ -242,8 +235,7 @@ class Orchestrator:
                 allowed_roles=self._allowed_roles_text()[0],
                 role_aliases=self._allowed_roles_text()[1],
             )
-        # Only attach the spec to navigator prompts to reduce token load.
-        if self.spec_text and task.role == "navigator":
+        if self.spec_text:
             rendered_prompt = f"{rendered_prompt}\n\nSpecification:\n{self.spec_text}"
 
         rendered_prompt = self._truncate_prompt(rendered_prompt)
@@ -342,83 +334,47 @@ class Orchestrator:
             save_state(state_path, state)
         return updated
 
-    def run(self, goal: str, run_id: str, state_path: Path) -> RunState:
-        self.goal = goal
+    def run_plan(
+        self,
+        plan: PlanResult,
+        run_id: str,
+        state_path: Path,
+        goal: str | None = None,
+        plan_path: Path | None = None,
+        plan_text: str | None = None,
+    ) -> RunState:
+        self.goal = goal or plan.goal
         self.paths.base.mkdir(parents=True, exist_ok=True)
         self.paths.worktrees.mkdir(parents=True, exist_ok=True)
         self.paths.runs.mkdir(parents=True, exist_ok=True)
         self._warm_tldr()
 
         run_state = RunState(
-            run_id=run_id, goal=goal, spec_file=self.spec_file, spec_text=self.spec_text
+            run_id=run_id,
+            goal=self.goal,
+            spec_file=self.spec_file,
+            spec_text=self.spec_text,
+            plan_file=plan_path,
+            plan_text=plan_text,
         )
         save_state(state_path, run_state)
-        navigator_role = self.config.role_for("navigator")
-        if not navigator_role:
-            raise ValueError("Navigator role missing in config")
-
-        navigator_prompt = goal
-        if navigator_role.prompt_template:
-            navigator_prompt = render_template(
-                navigator_role.prompt_template,
-                goal=goal,
-                prompt=goal,
-                allowed_roles=self._allowed_roles_text()[0],
-                role_aliases=self._allowed_roles_text()[1],
-            )
-        else:
-            allowed_roles, aliases = self._allowed_roles_text()
-            navigator_prompt = (
-                f"{navigator_prompt}\n\nAllowed roles: {allowed_roles}."
-            )
-            if aliases:
-                navigator_prompt += f" Aliases: {aliases}."
-
-        navigator_task = TaskRecord(
-            task_id="T0001", role="navigator", prompt=navigator_prompt
-        )
-        nav_result = self.run_task(run_id, state_path, run_state, navigator_task)
-        if nav_result.status != TaskStatus.COMPLETED or not nav_result.result:
-            return run_state
-
-        if not isinstance(nav_result.result, PlanResult):
-            return run_state
-
-        plan_payload = nav_result.result
-        tasks_data = plan_payload.tasks
-
-        # Validate roles before enqueuing tasks; fail fast if plan includes
-        # roles outside the configured set (after alias resolution).
-        invalid_roles: set[str] = set()
-        for item in tasks_data:
-            resolved = self.config.role_aliases.get(item.role, item.role)
-            if not self.config.role_for(resolved):
-                invalid_roles.add(item.role)
-        if invalid_roles:
-            nav_result.status = TaskStatus.FAILED
-            nav_result.error = (
-                "Plan contains invalid roles: "
-                + ", ".join(sorted(invalid_roles))
-                + f". Allowed: {', '.join(sorted({r.name for r in self.config.roles}))}."
-            )
-            upsert_task(run_state, nav_result)
-            save_state(state_path, run_state)
-            return run_state
+        tasks_data = plan.tasks
 
         limit = self.config.limits.max_tasks
         plan_id_map: dict[str, str] = {}
         planned_tasks: list[tuple[str, TaskRecord]] = []
-        next_index = 2
+        next_index = 1
         for item in tasks_data:
             task_id = f"T{next_index:04d}"
             plan_key = item.id or task_id
             plan_id_map[plan_key] = task_id
+            role_name = item.role or (self.config.roles[0].name if self.config.roles else "worker")
             planned_tasks.append(
                 (
                     task_id,
                     TaskRecord(
                         task_id=task_id,
-                        role=item.role,
+                        role=role_name,
                         prompt=item.prompt,
                         blocked_by=item.blocked_by,
                     ),
@@ -426,18 +382,22 @@ class Orchestrator:
             )
             next_index += 1
 
+        if not planned_tasks:
+            failure = TaskRecord(
+                task_id="T0001",
+                role="plan",
+                prompt="validate plan",
+                status=TaskStatus.FAILED,
+                error="Plan contains no tasks.",
+            )
+            upsert_task(run_state, failure)
+            save_state(state_path, run_state)
+            return run_state
+
         tasks_by_id: dict[str, TaskRecord] = {}
         for task_id, task in planned_tasks:
             mapped_blockers = [plan_id_map.get(dep, dep) for dep in task.blocked_by]
             task.blocked_by = mapped_blockers
-            resolved_role = self.config.role_aliases.get(task.role, task.role)
-            if not self.config.role_for(resolved_role):
-                task.status = TaskStatus.FAILED
-                task.error = f"Role not found in config: {resolved_role}"
-                tasks_by_id[task_id] = task
-                upsert_task(run_state, task)
-                continue
-            task.role = resolved_role
             tasks_by_id[task_id] = task
             upsert_task(run_state, task)
         # Apply default role-based blocking when none was provided.

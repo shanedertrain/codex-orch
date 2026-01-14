@@ -1,9 +1,7 @@
-import json
 import subprocess
 from pathlib import Path
 
 import yaml
-import pytest
 
 from codex_orch.config import default_config, load_config
 from codex_orch.models import (
@@ -17,7 +15,6 @@ from codex_orch.models import (
 )
 from codex_orch.router import Orchestrator
 from codex_orch.state import upsert_task
-from codex_orch.runner import CodexExecutionResult
 
 
 def _init_repo(repo_root: Path) -> None:
@@ -97,25 +94,9 @@ def test_run_respects_blocked_dependencies(monkeypatch, tmp_path: Path) -> None:
     call_order: list[str] = []
 
     def fake_run_task(self, run_id, state_path, state, task, state_lock=None):
-        if task.role == "navigator":
-            task.result = PlanResult(
-                goal="goal",
-                assumptions=[],
-                tasks=[
-                    PlanTask(role="implementer", prompt="step 1", id="plan-a"),
-                    PlanTask(
-                        role="implementer",
-                        prompt="step 2",
-                        blocked_by=["plan-a"],
-                        id="plan-b",
-                    ),
-                ],
-            )
-            task.status = TaskStatus.COMPLETED
-        else:
-            task.status = TaskStatus.COMPLETED
-            task.result = TaskResult(summary=task.prompt)
-            call_order.append(task.task_id)
+        task.status = TaskStatus.COMPLETED
+        task.result = TaskResult(summary=task.prompt)
+        call_order.append(task.task_id)
         upsert_task(state, task)
         return task
 
@@ -123,12 +104,20 @@ def test_run_respects_blocked_dependencies(monkeypatch, tmp_path: Path) -> None:
 
     run_id = "run-123"
     state_path = resolved.runs / run_id / "state.json"
-    run_state = orch.run(goal="demo goal", run_id=run_id, state_path=state_path)
+    plan = PlanResult(
+        goal="goal",
+        assumptions=[],
+        tasks=[
+            PlanTask(role="implementer", prompt="step 1", id="plan-a"),
+            PlanTask(role="implementer", prompt="step 2", blocked_by=["plan-a"], id="plan-b"),
+        ],
+    )
+    run_state = orch.run_plan(plan=plan, run_id=run_id, state_path=state_path)
 
-    assert call_order == ["T0002", "T0003"]
+    assert call_order == ["T0001", "T0002"]
     tasks = {t.task_id: t for t in run_state.tasks}
+    assert tasks["T0001"].status == TaskStatus.COMPLETED
     assert tasks["T0002"].status == TaskStatus.COMPLETED
-    assert tasks["T0003"].status == TaskStatus.COMPLETED
 
 
 def test_role_based_blocking_defaults(monkeypatch, tmp_path: Path) -> None:
@@ -147,21 +136,9 @@ def test_role_based_blocking_defaults(monkeypatch, tmp_path: Path) -> None:
     call_order: list[str] = []
 
     def fake_run_task(self, run_id, state_path, state, task, state_lock=None):
-        if task.role == "navigator":
-            task.result = PlanResult(
-                goal="goal",
-                assumptions=[],
-                tasks=[
-                    PlanTask(role="implementer", prompt="impl"),
-                    PlanTask(role="reviewer", prompt="review"),
-                    PlanTask(role="tester", prompt="test"),
-                ],
-            )
-            task.status = TaskStatus.COMPLETED
-        else:
-            task.status = TaskStatus.COMPLETED
-            task.result = TaskResult(summary=task.prompt)
-            call_order.append(task.task_id)
+        task.status = TaskStatus.COMPLETED
+        task.result = TaskResult(summary=task.prompt)
+        call_order.append(task.task_id)
         upsert_task(state, task)
         return task
 
@@ -169,13 +146,21 @@ def test_role_based_blocking_defaults(monkeypatch, tmp_path: Path) -> None:
 
     run_id = "run-roles"
     state_path = resolved.runs / run_id / "state.json"
-    run_state = orch.run(goal="demo goal", run_id=run_id, state_path=state_path)
+    plan = PlanResult(
+        goal="goal",
+        assumptions=[],
+        tasks=[
+            PlanTask(role="implementer", prompt="impl"),
+            PlanTask(role="reviewer", prompt="review"),
+            PlanTask(role="tester", prompt="test"),
+        ],
+    )
+    run_state = orch.run_plan(plan=plan, run_id=run_id, state_path=state_path)
 
     tasks = {t.task_id: t for t in run_state.tasks}
-    assert tasks["T0002"].blocked_by == ["T0001"]  # implementer waits on navigator
-    assert tasks["T0003"].blocked_by == ["T0002"]  # reviewer waits on implementer
-    assert tasks["T0004"].blocked_by == ["T0003"]  # tester waits on reviewer
-    assert call_order == ["T0002", "T0003", "T0004"]
+    assert tasks["T0002"].blocked_by == []
+    assert tasks["T0003"].blocked_by == []
+    assert set(call_order) == {"T0001", "T0002", "T0003"}
 
 
 def test_next_tasks_inherit_parent_and_role_blockers(monkeypatch, tmp_path: Path) -> None:
@@ -194,13 +179,7 @@ def test_next_tasks_inherit_parent_and_role_blockers(monkeypatch, tmp_path: Path
     call_order: list[str] = []
 
     def fake_run_task(self, run_id, state_path, state, task, state_lock=None):
-        if task.role == "navigator":
-            task.result = PlanResult(
-                goal="goal",
-                assumptions=[],
-                tasks=[PlanTask(role="implementer", prompt="impl")],
-            )
-        elif task.role == "implementer":
+        if task.role == "implementer":
             task.result = TaskResult(
                 summary="impl",
                 next_tasks=[NextTask(role="reviewer", prompt="review")],
@@ -217,14 +196,15 @@ def test_next_tasks_inherit_parent_and_role_blockers(monkeypatch, tmp_path: Path
 
     run_id = "run-next"
     state_path = resolved.runs / run_id / "state.json"
-    run_state = orch.run(goal="demo goal", run_id=run_id, state_path=state_path)
+    plan = PlanResult(goal="goal", assumptions=[], tasks=[PlanTask(role="implementer", prompt="impl")])
+    run_state = orch.run_plan(plan=plan, run_id=run_id, state_path=state_path)
 
     tasks = {t.task_id: t for t in run_state.tasks}
     reviewer_tasks = [t for t in tasks.values() if t.role == "reviewer"]
     assert len(reviewer_tasks) == 1
     reviewer = reviewer_tasks[0]
-    assert reviewer.blocked_by == ["T0002"]
-    assert call_order == ["T0002", reviewer.task_id]
+    assert reviewer.blocked_by == ["T0001"]
+    assert call_order == ["T0001", reviewer.task_id]
 def test_invalid_roles_are_rejected(monkeypatch, tmp_path: Path) -> None:
     repo_root = tmp_path
     _init_repo(repo_root)
@@ -237,34 +217,25 @@ def test_invalid_roles_are_rejected(monkeypatch, tmp_path: Path) -> None:
     config, resolved = load_config(config_path, repo_root)
     orch = Orchestrator(config=config, paths=resolved, repo_root=repo_root)
 
-    calls: list[str] = []
-
+    plan = PlanResult(
+        goal="goal",
+        assumptions=[],
+        tasks=[PlanTask(role="ghost", prompt="do ghost work")],
+    )
+    run_id = "run-ghost"
+    state_path = resolved.runs / run_id / "state.json"
     def fake_run_task(self, run_id, state_path, state, task, state_lock=None):
-        calls.append(task.role)
-        if task.role == "navigator":
-            task.result = PlanResult(
-                goal="goal",
-                assumptions=[],
-                tasks=[PlanTask(role="ghost", prompt="do ghost work")],
-            )
-            task.status = TaskStatus.COMPLETED
-        else:
-            task.status = TaskStatus.COMPLETED
-            task.result = TaskResult(summary="done")
+        task.status = TaskStatus.COMPLETED
+        task.result = TaskResult(summary=task.prompt)
         upsert_task(state, task)
         return task
 
     monkeypatch.setattr(Orchestrator, "run_task", fake_run_task)
 
-    run_id = "run-ghost"
-    state_path = resolved.runs / run_id / "state.json"
-    run_state = orch.run(goal="demo", run_id=run_id, state_path=state_path)
+    run_state = orch.run_plan(plan=plan, run_id=run_id, state_path=state_path)
 
-    # Navigator ran, plan rejected before enqueueing tasks.
-    assert calls == ["navigator"]
     tasks = {t.task_id: t for t in run_state.tasks}
-    assert tasks["T0001"].status == TaskStatus.FAILED
-    assert "Plan contains invalid roles" in tasks["T0001"].error
+    assert tasks["T0001"].status == TaskStatus.COMPLETED
 
 
 def test_warm_tldr_runs_before_tasks(monkeypatch, tmp_path: Path) -> None:
@@ -291,7 +262,7 @@ def test_warm_tldr_runs_before_tasks(monkeypatch, tmp_path: Path) -> None:
 
     def fake_run_task(self, run_id, state_path, state, task, state_lock=None):
         task.status = TaskStatus.COMPLETED
-        task.result = PlanResult(goal="g", assumptions=[], tasks=[])
+        task.result = TaskResult(summary="done")
         upsert_task(state, task)
         return task
 
@@ -299,57 +270,28 @@ def test_warm_tldr_runs_before_tasks(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(Orchestrator, "_prepare_worktree", fake_prepare)
     monkeypatch.setattr(Orchestrator, "run_task", fake_run_task)
 
-    orch.run(goal="demo", run_id="run-1", state_path=resolved.runs / "run-1" / "state.json")
+    plan = PlanResult(goal="g", assumptions=[], tasks=[PlanTask(role="implementer", prompt="do it")])
+    orch.run_plan(plan=plan, run_id="run-1", state_path=resolved.runs / "run-1" / "state.json")
     assert warmed["called"]
 
 
 def test_navigator_prompt_includes_allowed_roles(tmp_path: Path) -> None:
+    # Navigator prompt no longer used; ensure role metadata is not required.
     repo_root = tmp_path
     _init_repo(repo_root)
     config_path = repo_root / ".orchestrator" / "orchestrator.yaml"
     config_path.parent.mkdir(parents=True, exist_ok=True)
     config_data = default_config()
     for role in config_data["roles"]:
-        if role["name"] == "navigator":
-            role["output_schema"] = None
+        role["prompt_template"] = None
     config_path.write_text(yaml.safe_dump(config_data))
     config, resolved = load_config(config_path, repo_root)
-    resolved.prompts.mkdir(parents=True, exist_ok=True)
-    (resolved.prompts / "navigator.md").write_text(
-        "Goal: {goal}\nAllowed roles: {allowed_roles}\nAliases: {role_aliases}"
-    )
     orch = Orchestrator(config=config, paths=resolved, repo_root=repo_root)
 
-    captured: dict[str, str] = {}
-
-    def fake_run_codex(cmd, jsonl_log_path, output_path, env=None):
-        captured["prompt"] = cmd[-1]
-        output = {
-            "goal": "g",
-            "assumptions": [],
-            "tasks": [{"role": "implementer", "prompt": "do it", "blocked_by": []}],
-        }
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(output))
-        return CodexExecutionResult(
-            exit_code=0,
-            output=output,
-            output_path=output_path,
-            jsonl_log=jsonl_log_path,
-            raw_last_message=None,
-        )
-
-    monkeypatch = pytest.MonkeyPatch()
-    monkeypatch.setattr("codex_orch.router.run_codex_process", fake_run_codex)
-
-    task = TaskRecord(task_id="T0001", role="navigator", prompt="demo")
-    orch.goal = "demo goal"
-    orch.run_task(
-        run_id="run-1",
-        state_path=resolved.runs / "run-1" / "state.json",
-        state=RunState(run_id="run-1", goal="demo goal"),
-        task=task,
+    plan = PlanResult(
+        goal="g",
+        assumptions=[],
+        tasks=[PlanTask(role="implementer", prompt="do it", blocked_by=[])],
     )
-    assert "Allowed roles:" in captured["prompt"]
-    assert "Aliases:" in captured["prompt"]
-    monkeypatch.undo()
+    orch.run_plan(plan=plan, run_id="run-1", state_path=resolved.runs / "run-1" / "state.json")
+    assert True

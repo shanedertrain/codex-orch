@@ -246,6 +246,8 @@ class RunState:
     goal: str | None = None
     spec_file: Path | None = None
     spec_text: str | None = None
+    plan_file: Path | None = None
+    plan_text: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -253,6 +255,8 @@ class RunState:
             "goal": self.goal,
             "spec_file": str(self.spec_file) if self.spec_file else None,
             "spec_text": self.spec_text,
+            "plan_file": str(self.plan_file) if self.plan_file else None,
+            "plan_text": self.plan_text,
             "tasks": [t.to_dict() for t in self.tasks],
         }
 
@@ -260,18 +264,21 @@ class RunState:
     def from_dict(cls, payload: dict[str, Any]) -> "RunState":
         tasks = [TaskRecord.from_dict(t) for t in payload.get("tasks", [])]
         spec_file = payload.get("spec_file")
+        plan_file = payload.get("plan_file")
         return cls(
             run_id=payload["run_id"],
             tasks=tasks,
             goal=payload.get("goal"),
             spec_file=Path(spec_file) if spec_file else None,
             spec_text=payload.get("spec_text"),
+            plan_file=Path(plan_file) if plan_file else None,
+            plan_text=payload.get("plan_text"),
         )
 
 
 @dataclass
 class PlanTask:
-    role: str
+    role: str | None
     prompt: str
     acceptance: str | None = None
     blocked_by: list[str] = field(default_factory=list)
@@ -295,8 +302,8 @@ class PlanResult:
             plan_id = item.get("id")
             tasks.append(
                 PlanTask(
-                    role=item["role"],
-                    prompt=item["prompt"],
+                    role=item.get("role"),
+                    prompt=item.get("prompt", ""),
                     acceptance=item.get("acceptance"),
                     blocked_by=blocked_by,
                     id=plan_id,

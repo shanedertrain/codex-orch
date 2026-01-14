@@ -13,10 +13,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 import typer
 import yaml
+import jsonschema
 
 from .config import default_config
-from .models import RunState, TaskRecord, TaskStatus
+from .models import PlanResult, RunState, TaskRecord, TaskStatus
 from .router import Orchestrator, load_orchestrator, task_dir
+from .startup import ensure_codex_mem_running
 from .state import load_state, save_state
 from .worktree import remove_worktree
 
@@ -132,6 +134,40 @@ def _load_spec(
         typer.echo(f"Spec file must be UTF-8 text: {path}")
         raise typer.Exit(code=1)
     return path, text
+
+
+def _load_plan(repo_root: Path, plan_file: Path | None, schema_dir: Path) -> tuple[Path, str, PlanResult]:
+    if not plan_file:
+        typer.echo("Plan file is required for plan-only runs.")
+        raise typer.Exit(code=1)
+    path = plan_file if plan_file.is_absolute() else repo_root / plan_file
+    if not path.exists() or not path.is_file():
+        typer.echo(f"Plan file not found or not a file: {path}")
+        raise typer.Exit(code=1)
+    size = path.stat().st_size
+    if size == 0:
+        typer.echo(f"Plan file is empty: {path}")
+        raise typer.Exit(code=1)
+    if size > SPEC_MAX_BYTES:
+        typer.echo(f"Plan file exceeds {SPEC_MAX_BYTES} bytes: {path}")
+        raise typer.Exit(code=1)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        typer.echo(f"Plan file must be UTF-8 text: {path}")
+        raise typer.Exit(code=1)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError as exc:
+        typer.echo(f"Plan file is not valid JSON: {exc}")
+        raise typer.Exit(code=1)
+    schema_path = schema_dir / "plan.schema.json"
+    try:
+        jsonschema.validate(payload, json.loads(schema_path.read_text()))
+    except jsonschema.ValidationError as exc:
+        typer.echo(f"Plan file does not satisfy schema: {exc.message}")
+        raise typer.Exit(code=1)
+    return path, text, PlanResult.from_dict(payload)
 
 
 def _discover_run_ids(paths, explicit: list[str], older_than: int | None) -> list[str]:
@@ -332,6 +368,7 @@ def status(
     """Show task status for an existing run (without starting a new run)."""
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
+    ensure_codex_mem_running(repo_root)
     _, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
@@ -519,13 +556,18 @@ def init(
 
 @app.command()
 def run(
-    goal: str = typer.Argument(..., help="High-level goal for the navigator"),
+    plan_file: Path = typer.Option(..., "--plan-file", help="Path to a finalized implementation plan JSON (plan.schema.json)"),
     config: Path | None = typer.Option(
         None, "--config", help="Path to orchestrator YAML config"
     ),
     run_id: str | None = typer.Option(None, "--run-id", help="Run identifier"),
     spec_file: Path | None = typer.Option(
         None, "--spec-file", help="Path to a spec file to include in prompts"
+    ),
+    goal: str | None = typer.Option(
+        None,
+        "--goal",
+        help="Optional goal label to store with the run (defaults to plan.goal if present).",
     ),
     status_interval: float = typer.Option(
         3.0,
@@ -548,9 +590,11 @@ def run(
     config_path = config or _default_config_path(repo_root)
     run_identifier = run_id or datetime.utcnow().strftime("run-%Y%m%d-%H%M%S")
     orchestrator, paths = load_orchestrator(config_path, repo_root)
+    plan_path, plan_text, plan_result = _load_plan(repo_root, plan_file, _templates_dir() / "schemas")
     spec_path, spec_text = _load_spec(repo_root, spec_file)
     orchestrator.spec_file = spec_path
     orchestrator.spec_text = spec_text
+    chosen_goal = goal or plan_result.goal or "implementation-plan"
     state_path = _state_path(paths, run_identifier)
     stop_event: threading.Event | None = None
     status_thread: threading.Thread | None = None
@@ -566,8 +610,13 @@ def run(
 
     started_at = datetime.now(UTC)
     try:
-        result = orchestrator.run(
-            goal=goal, run_id=run_identifier, state_path=state_path
+        result = orchestrator.run_plan(
+            plan=plan_result,
+            run_id=run_identifier,
+            state_path=state_path,
+            goal=chosen_goal,
+            plan_path=plan_path,
+            plan_text=plan_text,
         )
     finally:
         if stop_event:
@@ -723,6 +772,7 @@ def resume(
 ) -> None:
     repo_root = _repo_root()
     config_path = config or _default_config_path(repo_root)
+    ensure_codex_mem_running(repo_root)
     orchestrator, paths = load_orchestrator(config_path, repo_root)
     state_path = _state_path(paths, run_id)
     if not state_path.exists():
