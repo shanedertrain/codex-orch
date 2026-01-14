@@ -596,7 +596,7 @@ def run(
         help="Show live task status while the run is active.",
     ),
     prune_on_complete: bool = typer.Option(
-        True,
+        False,
         "--prune-on-complete/--keep-worktree",
         help="Remove worktree/run artifacts after a completed run.",
     ),
