@@ -57,6 +57,7 @@ class Orchestrator:
         self.spec_file: Path | None = None
         self.spec_text: str | None = None
         self._state_lock = threading.Lock()
+        self._worktree_lock = threading.Lock()
         self._cached_allowed_roles: tuple[str, str] | None = None
 
     def _allowed_roles_text(self) -> tuple[str, str]:
@@ -112,11 +113,16 @@ class Orchestrator:
 
     def _prepare_worktree(self, run_id: str, task: TaskRecord) -> WorktreeSpec:
         if self.config.use_single_workspace:
-            spec = self.shared_workspace_spec(run_id)
-            worktree_path = task.worktree_path or spec.path
-            branch = task.branch or spec.branch
-            if worktree_path == spec.path and not worktree_path.exists():
-                create_worktree(spec, self.repo_root)
+            default_spec = self.shared_workspace_spec(run_id)
+            worktree_path = task.worktree_path or default_spec.path
+            branch = task.branch or default_spec.branch
+            spec = WorktreeSpec(
+                path=worktree_path, branch=branch, base_ref=self.config.git.base_ref
+            )
+            if not worktree_path.exists():
+                with self._worktree_lock:
+                    if not worktree_path.exists():
+                        create_worktree(spec, self.repo_root)
         else:
             worktree_path = self.paths.worktrees / f"{task.task_id}-{task.role}"
             branch = self._branch_name(run_id, task)

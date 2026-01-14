@@ -1,4 +1,6 @@
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import yaml
@@ -78,6 +80,41 @@ def test_prepare_shared_workspace(tmp_path: Path) -> None:
     spec_again = orch._prepare_worktree(run_id="run-123", task=follow_up)
     assert spec_again.path == spec.path
     assert follow_up.worktree_path == spec.path
+
+
+def test_prepare_shared_workspace_serializes_creation(monkeypatch, tmp_path: Path) -> None:
+    from codex_orch import router as router_module
+
+    repo_root = tmp_path
+    config_path = repo_root / ".orchestrator" / "orchestrator.yaml"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_data = default_config()
+    config_data["use_single_workspace"] = True
+    config_path.write_text(yaml.safe_dump(config_data))
+    config, resolved = load_config(config_path, repo_root)
+    orch = Orchestrator(config=config, paths=resolved, repo_root=repo_root)
+
+    calls: list[Path] = []
+
+    def fake_create(spec, repo_root_arg) -> None:
+        time.sleep(0.05)
+        calls.append(spec.path)
+        spec.path.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(router_module, "create_worktree", fake_create)
+
+    tasks = [
+        TaskRecord(task_id="T0001", role="implementer", prompt="demo"),
+        TaskRecord(task_id="T0002", role="tester", prompt="check"),
+    ]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(lambda t: orch._prepare_worktree("run-123", t), tasks))
+
+    shared_path = resolved.worktrees / "run-123"
+    assert len(calls) == 1
+    assert tasks[0].worktree_path == shared_path
+    assert tasks[1].worktree_path == shared_path
+    assert tasks[0].branch == tasks[1].branch
 
 
 def test_run_respects_blocked_dependencies(monkeypatch, tmp_path: Path) -> None:

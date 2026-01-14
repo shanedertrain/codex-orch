@@ -38,10 +38,19 @@ def current_branch(cwd: Path) -> str:
 def create_worktree(spec: WorktreeSpec, repo_root: Path) -> None:
     ensure_repo(repo_root)
     spec.path.parent.mkdir(parents=True, exist_ok=True)
-    add_proc = _run_git(
-        ["worktree", "add", "-B", spec.branch, str(spec.path), spec.base_ref],
-        cwd=repo_root,
-    )
+    _run_git(["worktree", "prune"], cwd=repo_root)
+
+    def _add_worktree() -> subprocess.CompletedProcess:
+        return _run_git(
+            ["worktree", "add", "-B", spec.branch, str(spec.path), spec.base_ref],
+            cwd=repo_root,
+        )
+
+    add_proc = _add_worktree()
+    if add_proc.returncode != 0:
+        # Retry once after pruning stale worktrees/refs.
+        _run_git(["worktree", "prune"], cwd=repo_root)
+        add_proc = _add_worktree()
     if add_proc.returncode != 0:
         raise WorktreeError(add_proc.stderr.strip() or "Failed to create worktree")
     init_proc = _run_git(
