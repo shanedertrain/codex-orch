@@ -22,6 +22,8 @@ class CodexExecutionResult:
     input_tokens: int = 0
     output_tokens: int = 0
     rate_limit_hits: int = 0
+    transport_errors: int = 0
+    last_error_line: str | None = None
 
 
 def build_codex_command(
@@ -96,6 +98,8 @@ def run_codex_process(
             input_tokens=jsonl_capture.input_tokens,
             output_tokens=jsonl_capture.output_tokens,
             rate_limit_hits=jsonl_capture.rate_limit_hits,
+            transport_errors=jsonl_capture.transport_errors,
+            last_error_line=jsonl_capture.last_error_line,
         )
 
 

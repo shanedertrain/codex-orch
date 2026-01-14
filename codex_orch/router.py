@@ -293,7 +293,13 @@ class Orchestrator:
                     task.result = TaskResult.from_dict(execution.output)
         else:
             task.status = TaskStatus.NEEDS_RETRY
-            task.error = "No structured output produced"
+            if execution.transport_errors:
+                task.error = (
+                    execution.last_error_line
+                    or "No structured output produced (transport error)"
+                )
+            else:
+                task.error = "No structured output produced"
 
         task.codex = CodexInvocation(
             cmd=cmd,

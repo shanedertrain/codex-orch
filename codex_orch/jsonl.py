@@ -13,10 +13,13 @@ class JsonlCapture:
     input_tokens: int = 0
     output_tokens: int = 0
     rate_limit_hits: int = 0
+    transport_errors: int = 0
+    last_error_line: str | None = None
 
     def __post_init__(self) -> None:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        self._handle = self.log_path.open("w", encoding="utf-8")
+        # Append so earlier prompt stats (if any) are preserved.
+        self._handle = self.log_path.open("a", encoding="utf-8")
 
     def close(self) -> None:
         self._handle.close()
@@ -40,6 +43,9 @@ class JsonlCapture:
             self.events.append({"raw": line})
             if "Rate limit reached" in line:
                 self.rate_limit_hits += 1
+        if "rmcp::transport" in line or "serde error invalid number" in line:
+            self.transport_errors += 1
+            self.last_error_line = line.strip()
 
     def flush(self) -> None:
         self._handle.flush()
