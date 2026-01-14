@@ -220,7 +220,7 @@ def _shorten(text: str, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
-ANSI_RE = re.compile(r"\x1b\\[[0-9;]*m")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 
 def _visible_len(text: str) -> int:
